@@ -89,7 +89,7 @@ jobs:
         run: cmake --build build --config Release --parallel
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build -C Release --output-on-failure
         env:
           # The offscreen platform plugin ships with every Qt 6
           # distribution and needs no display.  Setting it here makes
