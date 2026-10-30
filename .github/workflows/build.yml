@@ -12,10 +12,10 @@
 #    5. Builds in Release mode.
 #    6. Runs the test suite headless (QT_QPA_PLATFORM=offscreen).
 #
-#  This file deliberately mirrors the shape of release.yml so a fix in
-#  one file is likely to apply to the other.  The differences are:
-#    * no packaging / no artifact upload / no GitHub Release;
-#    * faster by design (Release only, no dist/ tree).
+#  Qt version note: 6.8.4 is the first 6.8.x release whose
+#  FindWrapOpenGL.cmake no longer links the AGL framework.  macOS 26
+#  (Tahoe) removed AGL, so 6.8.3 fails to link on macos-latest with
+#  "ld: framework 'AGL' not found".  Do not downgrade below 6.8.4.
 # -----------------------------------------------------------------------------
 
 name: Build and test
@@ -73,7 +73,10 @@ jobs:
           # arch comes from the matrix — hardcoding it here would install a
           # Windows Qt package on the Linux and macOS runners and fail with
           # "packages ['qt_base'] were not found".
-          version: '6.8.3'
+          #
+          # 6.8.4 is the minimum version that links on macOS 26; 6.8.3
+          # references the removed AGL framework.
+          version: '6.8.4'
           arch: ${{ matrix.qt_arch }}
           cache: true
 

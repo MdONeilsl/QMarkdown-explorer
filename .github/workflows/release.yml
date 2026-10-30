@@ -6,15 +6,13 @@
 #  Each build job:
 #    1. Checks out the tagged commit.
 #    2. Verifies that real brand icons are committed — a release with
-#       placeholder icons is worse than no release, so the workflow fails
-#       early with a clear message instead of shipping one silently.
+#       placeholder icons is worse than no release.
 #    3. Builds in Release mode with tests enabled.
 #    4. Runs the test suite (offscreen).  A release that fails its own
 #       tests must not be published.
 #    5. Installs into a dist/ prefix via `cmake --install`.
 #    6. On Windows, augments the install tree with the Qt runtime DLLs
-#       and platform plugin (CMake's POST_BUILD copies them into the
-#       build tree, not the install prefix).
+#       and platform plugin.
 #    7. Packages dist/ as .zip (Windows) or .tar.gz (Linux/macOS).
 #    8. Computes a SHA-256 checksum file alongside each archive.
 #    9. Uploads the archive + checksum as a build artifact.
@@ -23,18 +21,9 @@
 #  Release with them attached.  If any build job fails, the release is
 #  not created.
 #
-#  Platform notes:
-#    * Windows — fully self-contained.  Unzip and run QMarkdown-explorer.exe.
-#    * Linux   — requires Qt 6.12+ from the distribution or the Qt online
-#                installer.
-#    * macOS   — requires Qt 6.12+ (brew install qt@6, or the Qt online
-#                installer).  Built for arm64 (Apple Silicon); Intel Mac
-#                users should build from source.  Binaries are unsigned:
-#                macOS Gatekeeper will require a right-click → Open on
-#                first launch.
-#
-#  These platform-specific limits are documented in the generated release
-#  notes so users know what they are getting.
+#  Qt version note: 6.8.4 is the first 6.8.x release that does not link
+#  the AGL framework, which macOS 26 removed.  Do not downgrade below
+#  6.8.4 — the macOS job will fail at link time.
 # -----------------------------------------------------------------------------
 
 name: Release
@@ -89,7 +78,7 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.8.3'
+          version: '6.8.4'
           arch: ${{ matrix.qt_arch }}
           cache: true
 
@@ -183,8 +172,8 @@ jobs:
             | Platform | Package | Notes |
             |---|---|---|
             | Windows x64 | `.zip` | Fully self-contained — unzip and run `QMarkdown-explorer.exe`. |
-            | Linux x64 | `.tar.gz` | Requires Qt 6.12+ (from your distribution or the [Qt online installer](https://www.qt.io/download-qt-installer)). |
-            | macOS arm64 | `.tar.gz` | Requires Qt 6.12+ (`brew install qt@6`). Unsigned: right-click → **Open** on first launch. Intel Mac users: build from source. |
+            | Linux x64 | `.tar.gz` | Requires Qt 6.8+ (from your distribution or the [Qt online installer](https://www.qt.io/download-qt-installer)). |
+            | macOS arm64 | `.tar.gz` | Requires Qt 6.8+ (`brew install qt@6`). Unsigned: right-click → **Open** on first launch. Intel Mac users: build from source. |
 
             ## Verification
 
