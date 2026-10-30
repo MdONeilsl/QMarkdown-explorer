@@ -184,4 +184,17 @@ Icon?
 *.seed
 *.pid.lock
 
+# ---- Resources --------------------------------------------------------------
+# The two PNG icons below are required build assets: resources.qrc references
+# them, and rcc fails the build if either is missing.  They must be committed.
+# qt.png is deliberately NOT listed here because it must not be committed —
+# the Qt logo is a trademark and cannot be redistributed without a license.
+# See resources/resources.qrc for the full rationale.
+!resources/icons/
+!resources/icons/app.png
+!resources/icons/github.png
+
+# If a developer has a local qt.png for testing, keep it out of the repo.
+resources/icons/qt.png
+
 Note.txt

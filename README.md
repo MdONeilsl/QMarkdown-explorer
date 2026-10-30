@@ -45,8 +45,8 @@ Working and in use, but no automated test suite. Cross-platform builds are exerc
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/MdONeilsl/QMarkdown-explorer/blob/main/LICENSE).
 
 ## Maintainer
 
-[@your-username](https://github.com/your-username)
+[@MdONeilsl](https://github.com/MdONeilsl)

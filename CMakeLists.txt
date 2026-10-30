@@ -30,7 +30,7 @@ cmake_minimum_required(VERSION 3.21)
 project(QMarkdown-explorer
     VERSION      0.5.1
     DESCRIPTION  "A desktop Markdown explorer built with Qt 6 Widgets"
-    HOMEPAGE_URL "https://github.com/your-username/QMarkdown-explorer"
+    HOMEPAGE_URL "https://github.com/MdONeilsl/QMarkdown-explorer"
     LANGUAGES    CXX)
 
 # -----------------------------------------------------------------------------

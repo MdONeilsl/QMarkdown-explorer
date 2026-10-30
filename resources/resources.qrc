@@ -2,6 +2,6 @@
     <qresource prefix="/">
         <file>icons/app.png</file>
         <file>icons/github.png</file>
-        <file>icons/qt.png</file>
+        <!-- <file>icons/qt.png</file> -->
     </qresource>
 </RCC>
