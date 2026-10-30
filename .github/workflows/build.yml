@@ -1,26 +1,21 @@
 # -----------------------------------------------------------------------------
 #  Build + test QMarkdown-explorer on Windows, Linux, and macOS.
 #
-#  Triggers:
-#    * push to main        — full matrix
-#    * pull request        — full matrix
-#    * manual dispatch     — full matrix
+#  Triggers: push to main, pull request, manual dispatch.
 #
 #  Each job:
 #    1. Checks out the source.
-#    2. Installs the Qt SDK (6.12) via jurplel/install-qt-action.
-#    3. Creates placeholder icons — resources/resources.qrc references
-#       app.png and github.png, and rcc fails the build if they are
-#       missing.  The application does not depend on their *content* to
-#       compile or to pass the tests, so a 1x1 PNG is sufficient.
+#    2. Verifies the two required PNG icons are present — resources.qrc
+#       references them, and rcc fails the build if either is missing.
+#    3. Installs the Qt SDK for the job's platform via the matrix.
 #    4. Configures with -DBUILD_TESTING=ON.
-#    5. Builds (Release on all three; Debug-only would waste CI time).
-#    6. Runs the test suite headlessly via QT_QPA_PLATFORM=offscreen.
+#    5. Builds in Release mode.
+#    6. Runs the test suite headless (QT_QPA_PLATFORM=offscreen).
 #
-#  The workflow is deliberately minimal: no coverage upload, no artifacts,
-#  no release step.  Those are additions for when the project has actual
-#  releases; the value of this file is the three-platform build + test
-#  matrix it enables from day one.
+#  This file deliberately mirrors the shape of release.yml so a fix in
+#  one file is likely to apply to the other.  The differences are:
+#    * no packaging / no artifact upload / no GitHub Release;
+#    * faster by design (Release only, no dist/ tree).
 # -----------------------------------------------------------------------------
 
 name: Build and test
@@ -57,27 +52,30 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify required icons are committed
+        shell: bash
+        run: |
+          # resources/resources.qrc references these two files; rcc aborts
+          # the build if either is missing.  A dedicated check gives a
+          # clear error instead of a mid-build rcc failure.
+          missing=0
+          for icon in app.png github.png; do
+            if [ ! -f "resources/icons/$icon" ]; then
+              echo "::error::resources/icons/$icon is missing. Commit it."
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ]
+
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
+          # arch comes from the matrix — hardcoding it here would install a
+          # Windows Qt package on the Linux and macOS runners and fail with
+          # "packages ['qt_base'] were not found".
           version: '6.8.3'
-          arch: win64_msvc2022_64
+          arch: ${{ matrix.qt_arch }}
           cache: true
-          # Only Widgets and Test are needed; skipping the rest halves
-          # the download time and the disk footprint.
-          modules: ''
-
-      - name: Create placeholder icons
-        shell: bash
-        run: |
-          mkdir -p resources/icons
-          # A minimal valid PNG (1x1 transparent).  The resources.qrc
-          # requires these two files to exist; their pixels do not matter
-          # for the build or the test suite.
-          printf 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=' \
-              | base64 -d > resources/icons/app.png
-          cp resources/icons/app.png resources/icons/github.png
-          ls -la resources/icons/
 
       - name: Configure
         run: >
@@ -89,11 +87,9 @@ jobs:
         run: cmake --build build --config Release --parallel
 
       - name: Test
+        # -C Release is required for multi-config generators (MSVC).
+        # ctest and cmake --build use different flags for the same concept:
+        # --config for build, -C for ctest.
         run: ctest --test-dir build -C Release --output-on-failure
         env:
-          # The offscreen platform plugin ships with every Qt 6
-          # distribution and needs no display.  Setting it here makes
-          # the GUI-adjacent tests (tst_markdownview, tst_styleloader)
-          # work on the Linux and macOS runners, which are headless.
           QT_QPA_PLATFORM: offscreen
-          
