@@ -1,0 +1,187 @@
+# -----------------------------------------------------------------------------
+#  QMarkdown-explorer — .gitignore
+#
+#  Grouped by tool, not by extension.  Each section names the source of the
+#  files it ignores so a reader can tell whether an entry is here by design.
+#
+#  What MUST stay in the repository (do NOT ignore):
+#    * src/config.h.in             — build-time configuration template
+#    * src/*.h, src/*.cpp          — all source files
+#    * resources/resources.qrc     — icon manifest
+#    * resources/app.rc.in         — Windows resource script template
+#    * resources/icons/*.png/.ico  — brand assets (user-supplied)
+#    * styles/*.qss                — QSS themes
+#    * translations/*.ts           — translation catalogues (the source)
+#    * CMakeLists.txt
+#
+#  Pattern style: no anchoring (^ or leading /) unless the match would be
+#  ambiguous, so the rules work regardless of where the build tree lands.
+# -----------------------------------------------------------------------------
+
+# ---- Build output -----------------------------------------------------------
+# The canonical build directory.  CMake also supports `build-<config>/` and
+# IDE-managed directories under cmake-build-*/; both conventions appear here.
+build/
+build-*/
+cmake-build-*/
+out/
+install/
+
+# ---- CMake generated files --------------------------------------------------
+# In-source builds are discouraged but not prevented; if one happens, these
+# files appear in the source tree and must not be committed.
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+compile_commands.json
+.ninja_deps
+.ninja_log
+build.ninja
+rules.ninja
+
+# ---- Qt generated files -----------------------------------------------------
+# AUTOMOC / AUTORCC / AUTOUIC output.  Regenerated on every build.
+moc_*.cpp
+moc_*.h
+moc_predefs.h
+qrc_*.cpp
+ui_*.h
+*.moc
+.qmake.stash
+.qmake.cache
+
+# ---- Qt compiled translations ----------------------------------------------
+# translations/*.ts is the source of truth.  lrelease produces .qm at build
+# time; those land in build/translations/ during development and are
+# installed to <prefix>/translations/ — never committed.
+translations/*.qm
+
+# ---- Compiled artefacts -----------------------------------------------------
+# Object files, static and shared libraries, and executables.  Covers every
+# platform's naming convention so a mixed-tree checkout stays clean.
+*.o
+*.obj
+*.lo
+*.slo
+*.a
+*.lib
+*.la
+*.lai
+*.dll
+*.dylib
+*.so
+*.so.*
+*.exe
+*.app
+*.elf
+*.bin
+
+# The compiled binary itself, in case an in-source build lands it at the
+# repo root.  Anchored to root so it cannot accidentally match a directory.
+/QMarkdown-explorer
+/QMarkdown-explorer.exe
+
+# ---- Linker / debugger byproducts ------------------------------------------
+*.pdb
+*.ilk
+*.exp
+*.map
+*.dSYM/
+*.dSYM.zip
+
+# ---- Runtime user state -----------------------------------------------------
+# repos.txt is created next to the executable by RepoList.  During development
+# it lives in build/ (already ignored), but a hand-run build could place it in
+# the source tree; keep it ignored so user-specific data cannot be committed.
+repos.txt
+
+# ---- Coverage / profiling ---------------------------------------------------
+*.gcda
+*.gcno
+*.gcov
+*.lcov
+*.profraw
+*.profdata
+
+# ---- Compiler caches --------------------------------------------------------
+.cache/
+.ccache/
+ccache/
+.ccls-cache/
+
+# ---- Visual Studio ----------------------------------------------------------
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.opendb
+
+# ---- VS Code ----------------------------------------------------------------
+# Ignore per-developer VS Code state by default, but allow the project to
+# opt-in to a few files worth sharing with contributors.
+.vscode/*
+.vscode
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/extensions.json
+
+# ---- CLion / IntelliJ -------------------------------------------------------
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# ---- Qt Creator -------------------------------------------------------------
+*.autosave
+*.user.*
+
+# ---- Xcode ------------------------------------------------------------------
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+
+# ---- OS metadata ------------------------------------------------------------
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Icon?
+.fseventsd
+
+# Linux
+.directory
+.nfs*
+.Trash-*
+
+# ---- Editor backup / merge leftovers ----------------------------------------
+*~
+*.swp
+*.swo
+*.swn
+.*.swp
+*.bak
+*.orig
+*.rej
+
+# ---- Logs and temporary files -----------------------------------------------
+*.log
+*.tmp
+*.temp
+*.pid
+*.seed
+*.pid.lock
+
+Note.txt

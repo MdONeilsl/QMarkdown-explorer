@@ -1,0 +1,208 @@
+/* ------------------------------------------------------------------
+   dark.qss — deep neutral dark theme
+   Runtime-loaded by StyleLoader; the combo lists this as "dark".
+   ------------------------------------------------------------------ */
+
+QMainWindow {
+    background: #1e2023;
+}
+
+QToolBar {
+    background: #26292d;
+    border: none;
+    border-bottom: 1px solid #14161a;
+    spacing: 4px;
+    padding: 3px 6px;
+}
+
+QToolBar QToolButton,
+QToolBar QToolButton:focus {
+    color: #e6e8ea;
+    padding: 4px 10px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+}
+
+QToolBar QToolButton:hover {
+    background: #32363b;
+    border-color: #3f4449;
+}
+
+QToolBar QToolButton:pressed {
+    background: #3c4147;
+}
+
+QToolBar::separator {
+    background: #14161a;
+    width: 1px;
+    margin: 4px 6px;
+}
+
+/* Search box — pinned to the left, right after the Open Folder button. */
+QToolBar QLineEdit#searchEdit {
+    color: #e6e8ea;
+    background: #2b2f34;
+    padding: 4px 8px;
+    border: 1px solid #444a50;
+    border-radius: 4px;
+    min-width: 240px;
+    selection-background-color: #4f9df0;
+    selection-color: #0b1119;
+}
+
+QToolBar QLineEdit#searchEdit:hover {
+    border-color: #62696f;
+}
+
+QToolBar QLineEdit#searchEdit:focus {
+    border-color: #4f9df0;
+    background: #2b2f34;
+}
+
+QToolBar QLineEdit#searchEdit {
+    placeholder-text-color: #7d848a;
+}
+
+/* Expanding spacer between the search box and the style selector. */
+QWidget#toolbarSpacer {
+    background: transparent;
+}
+
+QLabel {
+    color: #c8ccd0;
+}
+
+QLabel#styleLabel {
+    color: #a8adb2;
+    padding: 0 6px 0 12px;
+}
+
+QComboBox {
+    color: #e6e8ea;
+    background: #2b2f34;
+    padding: 3px 8px;
+    border: 1px solid #444a50;
+    border-radius: 4px;
+    min-width: 100px;
+}
+
+QComboBox:hover {
+    border-color: #62696f;
+}
+
+QComboBox:on {
+    border-color: #4f9df0;
+}
+
+QComboBox QAbstractItemView {
+    color: #e6e8ea;
+    background: #2b2f34;
+    border: 1px solid #444a50;
+    selection-background-color: #4f9df0;
+    selection-color: #0b1119;
+    outline: 0;
+}
+
+QSplitter::handle {
+    background: #14161a;
+}
+
+QSplitter::handle:hover {
+    background: #3c4147;
+}
+
+QTreeView {
+    color: #e6e8ea;
+    background: #26292d;
+    border: 1px solid #14161a;
+    alternate-background-color: #2b2f34;
+}
+
+QTreeView::item {
+    padding: 3px 6px;
+    border: none;
+}
+
+QTreeView::item:hover {
+    background: #32363b;
+}
+
+QTreeView::item:selected,
+QTreeView::item:selected:active {
+    background: #4f9df0;
+    color: #0b1119;
+}
+
+QTextEdit {
+    color: #d6d9dc;
+    background: #232629;
+    border: 1px solid #14161a;
+    selection-background-color: #4f9df0;
+    selection-color: #0b1119;
+}
+
+QStatusBar {
+    background: #26292d;
+    border-top: 1px solid #14161a;
+    color: #a8adb2;
+}
+
+QStatusBar::item {
+    border: none;
+}
+
+/* Scroll bars — QSS-hides the native ones the moment any widget is
+   styled, so the dark theme must supply its own. */
+QScrollBar:vertical {
+    background: #232629;
+    width: 12px;
+    margin: 0;
+}
+
+QScrollBar::handle:vertical {
+    background: #454a50;
+    min-height: 24px;
+    border-radius: 6px;
+    margin: 2px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #5a6067;
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0;
+}
+
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical {
+    background: transparent;
+}
+
+QScrollBar:horizontal {
+    background: #232629;
+    height: 12px;
+    margin: 0;
+}
+
+QScrollBar::handle:horizontal {
+    background: #454a50;
+    min-width: 24px;
+    border-radius: 6px;
+    margin: 2px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background: #5a6067;
+}
+
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal {
+    width: 0;
+}
+
+QScrollBar::add-page:horizontal,
+QScrollBar::sub-page:horizontal {
+    background: transparent;
+}

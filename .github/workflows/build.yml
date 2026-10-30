@@ -1,0 +1,99 @@
+# -----------------------------------------------------------------------------
+#  Build + test QMarkdown-explorer on Windows, Linux, and macOS.
+#
+#  Triggers:
+#    * push to main        — full matrix
+#    * pull request        — full matrix
+#    * manual dispatch     — full matrix
+#
+#  Each job:
+#    1. Checks out the source.
+#    2. Installs the Qt SDK (6.12) via jurplel/install-qt-action.
+#    3. Creates placeholder icons — resources/resources.qrc references
+#       app.png and github.png, and rcc fails the build if they are
+#       missing.  The application does not depend on their *content* to
+#       compile or to pass the tests, so a 1x1 PNG is sufficient.
+#    4. Configures with -DBUILD_TESTING=ON.
+#    5. Builds (Release on all three; Debug-only would waste CI time).
+#    6. Runs the test suite headlessly via QT_QPA_PLATFORM=offscreen.
+#
+#  The workflow is deliberately minimal: no coverage upload, no artifacts,
+#  no release step.  Those are additions for when the project has actual
+#  releases; the value of this file is the three-platform build + test
+#  matrix it enables from day one.
+# -----------------------------------------------------------------------------
+
+name: Build and test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      # A failure on one platform is worth knowing about even if the other
+      # two pass — do not cancel the whole matrix on first failure.
+      fail-fast: false
+
+      matrix:
+        include:
+          - name: Windows (MSVC)
+            os: windows-latest
+            qt_arch: win64_msvc2022_64
+          - name: Linux (GCC)
+            os: ubuntu-latest
+            qt_arch: linux_gcc_64
+          - name: macOS (Clang)
+            os: macos-latest
+            qt_arch: clang_64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.12.0'
+          arch: ${{ matrix.qt_arch }}
+          cache: true
+          # Only Widgets and Test are needed; skipping the rest halves
+          # the download time and the disk footprint.
+          modules: ''
+
+      - name: Create placeholder icons
+        shell: bash
+        run: |
+          mkdir -p resources/icons
+          # A minimal valid PNG (1x1 transparent).  The resources.qrc
+          # requires these two files to exist; their pixels do not matter
+          # for the build or the test suite.
+          printf 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=' \
+              | base64 -d > resources/icons/app.png
+          cp resources/icons/app.png resources/icons/github.png
+          ls -la resources/icons/
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=ON
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+        env:
+          # The offscreen platform plugin ships with every Qt 6
+          # distribution and needs no display.  Setting it here makes
+          # the GUI-adjacent tests (tst_markdownview, tst_styleloader)
+          # work on the Linux and macOS runners, which are headless.
+          QT_QPA_PLATFORM: offscreen
+          

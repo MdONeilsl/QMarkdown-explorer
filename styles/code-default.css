@@ -1,0 +1,22 @@
+/* ------------------------------------------------------------------
+   Code block styling for the "default" theme.
+   Read by StyleLoader::documentCss() and passed to MarkdownView, which
+   applies the values as QTextBlockFormat / QTextCharFormat backgrounds
+   after setMarkdown().  Only `background` / `background-color` and
+   `color` are consulted; any other declaration is ignored, because
+   QTextDocument's markdown importer does not go through setHtml() and
+   therefore cannot consume a full stylesheet.
+
+   Keeping the format CSS-shaped makes this file read like the .qss
+   files next to it and keeps the values in one obvious place.
+   ------------------------------------------------------------------ */
+
+pre {
+    background: #f4f4f5;
+    color: #1f2328;
+}
+
+code {
+    background: #f4f4f5;
+    color: #1f2328;
+}

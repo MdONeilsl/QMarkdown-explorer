@@ -1,0 +1,152 @@
+/* ------------------------------------------------------------------
+   light.qss — bright, high-contrast reading theme
+   Runtime-loaded by StyleLoader; the combo lists this as "light".
+   ------------------------------------------------------------------ */
+
+QMainWindow {
+    background: #ffffff;
+}
+
+QToolBar {
+    background: #ffffff;
+    border: none;
+    border-bottom: 1px solid #e4e6ea;
+    spacing: 4px;
+    padding: 3px 6px;
+}
+
+QToolBar QToolButton,
+QToolBar QToolButton:focus {
+    color: #1a1d20;
+    padding: 4px 10px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+}
+
+QToolBar QToolButton:hover {
+    background: #f1f4f9;
+    border-color: #dde3ec;
+}
+
+QToolBar QToolButton:pressed {
+    background: #e4ebf5;
+}
+
+QToolBar::separator {
+    background: #e4e6ea;
+    width: 1px;
+    margin: 4px 6px;
+}
+
+/* Search box — pinned to the left, right after the Open Folder button. */
+QToolBar QLineEdit#searchEdit {
+    color: #1a1d20;
+    background: #ffffff;
+    padding: 4px 8px;
+    border: 1px solid #cdd2d9;
+    border-radius: 4px;
+    min-width: 240px;
+    selection-background-color: #c9deff;
+    selection-color: #0b1d33;
+}
+
+QToolBar QLineEdit#searchEdit:hover {
+    border-color: #96a0ab;
+}
+
+QToolBar QLineEdit#searchEdit:focus {
+    border-color: #2b6cb0;
+    background: #ffffff;
+}
+
+QToolBar QLineEdit#searchEdit {
+    placeholder-text-color: #9ba1a8;
+}
+
+/* Expanding spacer between the search box and the style selector. */
+QWidget#toolbarSpacer {
+    background: transparent;
+}
+
+QLabel {
+    color: #2c3034;
+}
+
+QLabel#styleLabel {
+    color: #3a3f44;
+    padding: 0 6px 0 12px;
+}
+
+QComboBox {
+    color: #1a1d20;
+    background: #ffffff;
+    padding: 3px 8px;
+    border: 1px solid #cdd2d9;
+    border-radius: 4px;
+    min-width: 100px;
+}
+
+QComboBox:hover {
+    border-color: #96a0ab;
+}
+
+QComboBox:on {
+    border-color: #2b6cb0;
+}
+
+QComboBox QAbstractItemView {
+    color: #1a1d20;
+    background: #ffffff;
+    border: 1px solid #cdd2d9;
+    selection-background-color: #d6e4ff;
+    selection-color: #0b1d33;
+    outline: 0;
+}
+
+QSplitter::handle {
+    background: #e4e6ea;
+}
+
+QSplitter::handle:hover {
+    background: #c6ccd3;
+}
+
+QTreeView {
+    color: #1a1d20;
+    background: #fbfcfd;
+    border: 1px solid #e4e6ea;
+    alternate-background-color: #f4f7fb;
+}
+
+QTreeView::item {
+    padding: 3px 6px;
+    border: none;
+}
+
+QTreeView::item:hover {
+    background: #eef4ff;
+}
+
+QTreeView::item:selected,
+QTreeView::item:selected:active {
+    background: #d6e4ff;
+    color: #0b1d33;
+}
+
+QTextEdit {
+    color: #101215;
+    background: #ffffff;
+    border: 1px solid #e4e6ea;
+    selection-background-color: #c9deff;
+    selection-color: #0b1d33;
+}
+
+QStatusBar {
+    background: #fbfcfd;
+    border-top: 1px solid #e4e6ea;
+    color: #3a3f44;
+}
+
+QStatusBar::item {
+    border: none;
+}

@@ -1,0 +1,207 @@
+
+# -----------------------------------------------------------------------------
+#  Release QMarkdown-explorer.
+#
+#  Triggered by pushing a tag matching v* (e.g. v1.0.0, v1.2.3-rc.1).
+#
+#  Each build job:
+#    1. Checks out the tagged commit.
+#    2. Verifies that real brand icons are committed — a release with
+#       placeholder icons is worse than no release, so the workflow fails
+#       early with a clear message instead of shipping one silently.
+#    3. Builds in Release mode with tests enabled.
+#    4. Runs the test suite (offscreen).  A release that fails its own
+#       tests must not be published.
+#    5. Installs into a dist/ prefix via `cmake --install`.
+#    6. On Windows, augments the install tree with the Qt runtime DLLs
+#       and platform plugin (CMake's POST_BUILD copies them into the
+#       build tree, not the install prefix).
+#    7. Packages dist/ as .zip (Windows) or .tar.gz (Linux/macOS).
+#    8. Computes a SHA-256 checksum file alongside each archive.
+#    9. Uploads the archive + checksum as a build artifact.
+#
+#  A final `publish` job downloads all artifacts and creates the GitHub
+#  Release with them attached.  If any build job fails, the release is
+#  not created.
+#
+#  Platform notes:
+#    * Windows — fully self-contained.  Unzip and run QMarkdown-explorer.exe.
+#    * Linux   — requires Qt 6.12+ from the distribution or the Qt online
+#                installer.
+#    * macOS   — requires Qt 6.12+ (brew install qt@6, or the Qt online
+#                installer).  Built for arm64 (Apple Silicon); Intel Mac
+#                users should build from source.  Binaries are unsigned:
+#                macOS Gatekeeper will require a right-click → Open on
+#                first launch.
+#
+#  These platform-specific limits are documented in the generated release
+#  notes so users know what they are getting.
+# -----------------------------------------------------------------------------
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+            qt_arch: win64_msvc2022_64
+            package_ext: zip
+          - name: linux-x64
+            os: ubuntu-latest
+            qt_arch: linux_gcc_64
+            package_ext: tar.gz
+          - name: macos-arm64
+            os: macos-latest
+            qt_arch: clang_64
+            package_ext: tar.gz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify release icons are committed
+        shell: bash
+        run: |
+          missing=0
+          for icon in app.png github.png; do
+            if [ ! -f "resources/icons/$icon" ]; then
+              echo "::error::resources/icons/$icon is missing. Commit it before tagging."
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ]
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.12.0'
+          arch: ${{ matrix.qt_arch }}
+          cache: true
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=ON
+          -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/dist
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+      - name: Install
+        run: cmake --install build --config Release
+
+      - name: Augment Windows install with Qt runtime
+        if: matrix.name == 'windows-x64'
+        shell: pwsh
+        run: |
+          $buildDir = Join-Path $env:GITHUB_WORKSPACE "build/Release"
+          $distDir  = Join-Path $env:GITHUB_WORKSPACE "dist"
+          Copy-Item (Join-Path $buildDir "Qt6Core.dll")    $distDir -Force
+          Copy-Item (Join-Path $buildDir "Qt6Gui.dll")     $distDir -Force
+          Copy-Item (Join-Path $buildDir "Qt6Widgets.dll") $distDir -Force
+          $platformsDir = Join-Path $distDir "platforms"
+          New-Item -ItemType Directory -Path $platformsDir -Force | Out-Null
+          Copy-Item (Join-Path $buildDir "platforms/qwindows.dll") $platformsDir -Force
+          Write-Host "Installed tree contents:"
+          Get-ChildItem -Recurse $distDir | Select-Object FullName
+
+      - name: Package
+        shell: bash
+        run: |
+          cd "${{ github.workspace }}"
+          artifact="QMarkdown-explorer-${{ github.ref_name }}-${{ matrix.name }}.${{ matrix.package_ext }}"
+          if [ "${{ matrix.package_ext }}" = "zip" ]; then
+            powershell -Command "Compress-Archive -Path 'dist/*' -DestinationPath '$artifact'"
+          else
+            tar -C dist -czf "$artifact" .
+          fi
+
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$artifact" > "$artifact.sha256"
+          else
+            shasum -a 256 "$artifact" > "$artifact.sha256"
+          fi
+
+          ls -la "$artifact" "$artifact.sha256"
+          cat "$artifact.sha256"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}-artifacts
+          path: |
+            QMarkdown-explorer-${{ github.ref_name }}-${{ matrix.name }}.*
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: '*-artifacts'
+          merge-multiple: true
+
+      - name: List downloaded assets
+        run: ls -la release-assets/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') || contains(github.ref_name, '-pre') }}
+          generate_release_notes: true
+          body: |
+            ## Platform support
+
+            | Platform | Package | Notes |
+            |---|---|---|
+            | Windows x64 | `.zip` | Fully self-contained — unzip and run `QMarkdown-explorer.exe`. |
+            | Linux x64 | `.tar.gz` | Requires Qt 6.12+ (from your distribution or the [Qt online installer](https://www.qt.io/download-qt-installer)). |
+            | macOS arm64 | `.tar.gz` | Requires Qt 6.12+ (`brew install qt@6`). Unsigned: right-click → **Open** on first launch. Intel Mac users: build from source. |
+
+            ## Verification
+
+            Each archive ships with a `.sha256` companion file. Verify with:
+
+            ```sh
+            # Linux
+            sha256sum -c QMarkdown-explorer-*-linux-x64.tar.gz.sha256
+
+            # macOS
+            shasum -a 256 -c QMarkdown-explorer-*-macos-arm64.tar.gz.sha256
+            ```
+
+            ```powershell
+            # Windows PowerShell
+            Get-FileHash QMarkdown-explorer-*-windows-x64.zip -Algorithm SHA256
+            ```
+          files: release-assets/*
+          fail_on_unmatched_files: true

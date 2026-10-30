@@ -1,0 +1,12 @@
+/* Code block styling for the "dark" theme.  See code-default.css for
+   the format and the reason only two values are used. */
+
+pre {
+    background: #2b2f34;
+    color: #e6e8ea;
+}
+
+code {
+    background: #2b2f34;
+    color: #e6e8ea;
+}
