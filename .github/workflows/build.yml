@@ -44,21 +44,18 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          # Qt 6.8.3 is the latest open-source LTS release available
-          # through aqtinstall. Version 6.8.4 is commercial-only and
-          # cannot be installed via this action.
           version: '6.8.3'
           arch: ${{ matrix.qt_arch }}
           cache: true
 
+      # --- NEW STEP ADDED HERE ---
       - name: Patch Qt for macOS (remove AGL framework)
         if: matrix.name == 'macOS (Clang)'
         shell: bash
         run: |
           # macOS 26 removed the AGL framework, but Qt 6.8.3 still links
           # against it. This sed command comments out the line that adds
-          # AGL to the OpenGL link interface. The patch is idempotent:
-          # running it twice has no additional effect.
+          # AGL to the OpenGL link interface. The patch is idempotent.
           QT_DIR="${QT_ROOT_DIR}/lib/cmake/Qt6"
           TARGET_FILE="${QT_DIR}/FindWrapOpenGL.cmake"
           if [ -f "$TARGET_FILE" ]; then
