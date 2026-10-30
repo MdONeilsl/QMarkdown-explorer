@@ -1,3 +1,21 @@
+# -----------------------------------------------------------------------------
+#  Build + test QMarkdown-explorer on Windows and Linux.
+#
+#  Triggers: push to main, pull request, manual dispatch.
+#
+#  Each job:
+#    1. Checks out the source.
+#    2. Verifies the two required PNG icons are present — resources.qrc
+#       references them, and rcc fails the build if either is missing.
+#    3. Installs the Qt SDK for the job's platform via the matrix.
+#    4. Configures with -DBUILD_TESTING=ON.
+#    5. Builds in Release mode.
+#    6. Runs the test suite headless (QT_QPA_PLATFORM=offscreen).
+#
+#  Supported platforms: Windows x64 (MSVC), Linux x64 (GCC).
+#  macOS is not supported by this workflow.
+# -----------------------------------------------------------------------------
+
 name: Build and test
 
 on:
@@ -12,7 +30,10 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     strategy:
+      # A failure on one platform is worth knowing about even if the
+      # other passes — do not cancel the whole matrix on first failure.
       fail-fast: false
+
       matrix:
         include:
           - name: Windows (MSVC)
@@ -21,9 +42,6 @@ jobs:
           - name: Linux (GCC)
             os: ubuntu-latest
             qt_arch: linux_gcc_64
-          - name: macOS (Clang)
-            os: macos-latest
-            qt_arch: clang_64
 
     steps:
       - name: Checkout
@@ -32,6 +50,9 @@ jobs:
       - name: Verify required icons are committed
         shell: bash
         run: |
+          # resources/resources.qrc references these two files; rcc aborts
+          # the build if either is missing.  A dedicated check gives a
+          # clear error instead of a mid-build rcc failure.
           missing=0
           for icon in app.png github.png; do
             if [ ! -f "resources/icons/$icon" ]; then
@@ -44,26 +65,12 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
+          # arch comes from the matrix — hardcoding it here would install a
+          # Windows Qt package on the Linux runner and fail with
+          # "packages ['qt_base'] were not found".
           version: '6.8.3'
           arch: ${{ matrix.qt_arch }}
           cache: true
-
-      # --- NEW STEP ADDED HERE ---
-      - name: Patch Qt for macOS (remove AGL framework)
-        if: matrix.name == 'macOS (Clang)'
-        shell: bash
-        run: |
-          # macOS 26 removed the AGL framework, but Qt 6.8.3 still links
-          # against it. This sed command comments out the line that adds
-          # AGL to the OpenGL link interface. The patch is idempotent.
-          QT_DIR="${QT_ROOT_DIR}/lib/cmake/Qt6"
-          TARGET_FILE="${QT_DIR}/FindWrapOpenGL.cmake"
-          if [ -f "$TARGET_FILE" ]; then
-            sed -i '' 's/^ *find_library(WrapOpenGL_AGL NAMES AGL)/# &/' "$TARGET_FILE"
-            echo "Patched $TARGET_FILE"
-          else
-            echo "::warning file=$TARGET_FILE not found; AGL patch skipped."
-          fi
 
       - name: Configure
         run: >
@@ -75,6 +82,9 @@ jobs:
         run: cmake --build build --config Release --parallel
 
       - name: Test
+        # -C Release is required for multi-config generators (MSVC).
+        # ctest and cmake --build use different flags for the same concept:
+        # --config for build, -C for ctest.
         run: ctest --test-dir build -C Release --output-on-failure
         env:
           QT_QPA_PLATFORM: offscreen

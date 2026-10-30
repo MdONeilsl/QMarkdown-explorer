@@ -13,7 +13,7 @@
 #    5. Installs into a dist/ prefix via `cmake --install`.
 #    6. On Windows, augments the install tree with the Qt runtime DLLs
 #       and platform plugin.
-#    7. Packages dist/ as .zip (Windows) or .tar.gz (Linux/macOS).
+#    7. Packages dist/ as .zip (Windows) or .tar.gz (Linux).
 #    8. Computes a SHA-256 checksum file alongside each archive.
 #    9. Uploads the archive + checksum as a build artifact.
 #
@@ -21,9 +21,8 @@
 #  Release with them attached.  If any build job fails, the release is
 #  not created.
 #
-#  Qt version note: 6.8.4 is the first 6.8.x release that does not link
-#  the AGL framework, which macOS 26 removed.  Do not downgrade below
-#  6.8.4 — the macOS job will fail at link time.
+#  Supported platforms: Windows x64 (self-contained zip),
+#  Linux x64 (tarball requiring Qt 6.8+).  macOS is not supported.
 # -----------------------------------------------------------------------------
 
 name: Release
@@ -54,10 +53,6 @@ jobs:
             os: ubuntu-latest
             qt_arch: linux_gcc_64
             package_ext: tar.gz
-          - name: macos-arm64
-            os: macos-latest
-            qt_arch: clang_64
-            package_ext: tar.gz
 
     steps:
       - name: Checkout
@@ -78,7 +73,7 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.8.4'
+          version: '6.8.3'
           arch: ${{ matrix.qt_arch }}
           cache: true
 
@@ -125,13 +120,7 @@ jobs:
           else
             tar -C dist -czf "$artifact" .
           fi
-
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "$artifact" > "$artifact.sha256"
-          else
-            shasum -a 256 "$artifact" > "$artifact.sha256"
-          fi
-
+          sha256sum "$artifact" > "$artifact.sha256"
           ls -la "$artifact" "$artifact.sha256"
           cat "$artifact.sha256"
 
@@ -173,7 +162,6 @@ jobs:
             |---|---|---|
             | Windows x64 | `.zip` | Fully self-contained — unzip and run `QMarkdown-explorer.exe`. |
             | Linux x64 | `.tar.gz` | Requires Qt 6.8+ (from your distribution or the [Qt online installer](https://www.qt.io/download-qt-installer)). |
-            | macOS arm64 | `.tar.gz` | Requires Qt 6.8+ (`brew install qt@6`). Unsigned: right-click → **Open** on first launch. Intel Mac users: build from source. |
 
             ## Verification
 
@@ -182,9 +170,6 @@ jobs:
             ```sh
             # Linux
             sha256sum -c QMarkdown-explorer-*-linux-x64.tar.gz.sha256
-
-            # macOS
-            shasum -a 256 -c QMarkdown-explorer-*-macos-arm64.tar.gz.sha256
             ```
 
             ```powershell
