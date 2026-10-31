@@ -5,24 +5,7 @@
 set(MD_GENERATED_INCLUDE ${CMAKE_BINARY_DIR}/generated)
 set(MD_TEST_LIBS Qt6::Test Qt6::Widgets)
 
-# -----------------------------------------------------------------------------
-#  add_test_qt_runtime(<target>)
-#
-#  Copies the Qt runtime DLLs and every platform plugin next to <target>
-#  on Windows.  No-op on other platforms.
-#
-#  The platform plugin directory is copied in full (windows, offscreen,
-#  minimal, …) rather than just qwindows[d].dll.  The tests set
-#  QT_QPA_PLATFORM=offscreen to run on headless CI runners, and the
-#  offscreen plugin must therefore be present — copying only qwindows
-#  leaves the tests unable to construct a QApplication:
-#
-#      "Could not find the Qt platform plugin "offscreen"."
-#
-#  Copying the whole directory is simpler than tracking individual
-#  plugin names, and the size cost (a few hundred KB per plugin) is
-#  irrelevant for a test build.
-# -----------------------------------------------------------------------------
+
 function(add_test_qt_runtime target)
     if(NOT WIN32)
         return()
@@ -30,37 +13,44 @@ function(add_test_qt_runtime target)
     if(NOT TARGET Qt6::Test)
         return()
     endif()
+    if(TARGET deploy_qt_test_runtime)
+        add_dependencies(${target} deploy_qt_test_runtime)
+    endif()
+endfunction()
 
-    add_custom_command(TARGET ${target} POST_BUILD
+# -----------------------------------------------------------------------------
+#  deploy_qt_test_runtime — copies the Qt runtime DLLs and the platform
+#  plugin folder into the test output directory, exactly once per build.
+#
+#  The previous design attached a POST_BUILD copy to every test target.
+#  Under -j N all N targets performed the same copy simultaneously, and
+#  Windows rejected the concurrent writers with
+#      "copying directory …: Permission denied"
+#  The fix is a single shared target: the copy happens once, and every
+#  test target depends on it.  Sequential by construction — the same
+#  reason the application target never hit this bug.
+#
+#  Uses $<TARGET_FILE_DIR:QMarkdown-explorer> as the destination because
+#  all tests link into the same directory as the application (build/
+#  Debug/ on multi-config generators, build/ on single-config ones).
+# -----------------------------------------------------------------------------
+if(WIN32 AND TARGET Qt6::Test)
+    add_custom_target(deploy_qt_test_runtime
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:Qt6::Core>
             $<TARGET_FILE:Qt6::Gui>
             $<TARGET_FILE:Qt6::Widgets>
             $<TARGET_FILE:Qt6::Test>
-            $<TARGET_FILE_DIR:${target}>
-        COMMENT "Copying Qt runtime DLLs next to ${target}"
+            $<TARGET_FILE_DIR:QMarkdown-explorer>
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:QMarkdown-explorer>/platforms"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${QT6_INSTALL_PREFIX}/plugins/platforms"
+            "$<TARGET_FILE_DIR:QMarkdown-explorer>/platforms"
+        COMMENT "Deploying Qt runtime for tests (single step)"
         VERBATIM
     )
-
-    if(DEFINED QT6_INSTALL_PREFIX
-       AND EXISTS "${QT6_INSTALL_PREFIX}/plugins/platforms")
-        add_custom_command(TARGET ${target} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E make_directory
-                "$<TARGET_FILE_DIR:${target}>/platforms"
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${QT6_INSTALL_PREFIX}/plugins/platforms"
-                "$<TARGET_FILE_DIR:${target}>/platforms"
-            COMMENT "Copying Qt platform plugins next to ${target}"
-            VERBATIM
-        )
-    else()
-        message(WARNING
-            "Cannot locate the Qt platform plugin directory for target "
-            "'${target}'.  '${QT6_INSTALL_PREFIX}/plugins/platforms' does "
-            "not exist.  Tests that create a QApplication will fail to "
-            "start.")
-    endif()
-endfunction()
+endif()
 
 # -----------------------------------------------------------------------------
 #  tst_imageresolver

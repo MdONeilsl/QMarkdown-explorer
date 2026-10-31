@@ -16,8 +16,8 @@ Point it at a folder; browse and read every `.md` file inside it without leaving
 ## Requirements
 
 - CMake 3.21+
-- Qt 6.12 (Widgets, LinguistTools)
-- A C++20 compiler (MSVC 2022, GCC 11+, Clang 14+)
+- Qt 6 (Widgets, LinguistTools)
+- A C++20 compiler (MSVC 2022, GCC 11+, *Clang 14+)
 
 ## Build
 
