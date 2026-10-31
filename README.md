@@ -45,7 +45,7 @@ Working and in use. Every push and every pull request runs the full automated te
 
 ## License
 
-MIT — see [LICENSE](https://github.com/MdONeilsl/QMarkdown-explorer/blob/main/LICENSE).
+GNU — see [LICENSE](https://github.com/MdONeilsl/QMarkdown-explorer/blob/main/LICENSE).
 
 ## Maintainer
 
