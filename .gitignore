@@ -193,8 +193,6 @@ Icon?
 !resources/icons/
 !resources/icons/app.png
 !resources/icons/github.png
-
-# If a developer has a local qt.png for testing, keep it out of the repo.
-resources/icons/qt.png
+!resources/icons/qt.png
 
 Note.txt

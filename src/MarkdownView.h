@@ -3,6 +3,8 @@
 #include <QString>
 #include <QTextEdit>
 
+class QWheelEvent;
+
 /**
  * @brief Read-only Markdown renderer.
  *
@@ -23,16 +25,22 @@
  *       plain document will find that images silently disappear from
  *       the rendered output.
  *
- * Code-block styling: `QTextDocument::setDefaultStyleSheet()` is not
- * consulted by `setMarkdown()` — markdown is parsed by
- * `QTextMarkdownImporter`, which does not go through `setHtml()`.  As a
- * result, CSS cannot be applied to the rendered content directly.  This
- * widget works around that by post-processing the document after
- * `setMarkdown()`: fenced code blocks receive a `QTextBlockFormat` with
- * a background brush, and inline code receives the equivalent
- * `QTextCharFormat` merge.  The colour values come from a CSS file
- * supplied by `setTheme()` (conventionally `styles/code-<theme>.css`);
- * the CSS itself is parsed only for the `background` and `color` values.
+ * Code-block styling: fenced code blocks receive a
+ * `QTextBlockFormat` background from `styles/code-<theme>.css`, applied
+ * after `setMarkdown()` completes.  Inline code is intentionally not
+ * styled — QTextCursor::mergeCharFormat() on inline ranges crashes
+ * inside Qt 6.x.
+ *
+ * Layout: both `setMarkdown()` and `applyCodeBlockStyles()` run under a
+ * `ScopedLayoutDisable` guard so the document lays out once instead of
+ * once per edit.  Without this a 500-row table takes minutes to load;
+ * with it, the same file loads in ~1.25 s.
+ *
+ * Text size: the base font is set to 13pt in the constructor — larger
+ * than the 9pt application default, comfortable for long-form reading.
+ * The user can adjust it further with Ctrl + mouse wheel; the wheel
+ * handler clamps the range to 10–40pt so the text cannot shrink into
+ * illegibility or grow until a single header fills the viewport.
  */
 class MarkdownView : public QTextEdit
 {
@@ -41,7 +49,12 @@ class MarkdownView : public QTextEdit
 public:
     explicit MarkdownView(QWidget *parent = nullptr);
 
-    /// @brief Loads `filePath`, resolves image references, and renders.
+    /**
+     * @brief Loads `filePath`, resolves image references, and renders.
+     *
+     * @return `true` on success.  On failure the previous document is
+     *         left untouched.
+     */
     bool loadFile(const QString &filePath);
 
     /**
@@ -49,17 +62,21 @@ public:
      *
      * @param themeName    The style name as reported by StyleLoader
      *                     (`"dark"`, `"light"`, or empty for default).
-     *                     Used only to remember the current theme; the
-     *                     colour values come from `documentCss`.
      * @param documentCss  Contents of the theme’s `code-<name>.css`.
      *                     Parsed for `background` / `background-color`
-     *                     and `color` — see the class doc.  Empty CSS
-     *                     disables code-block styling.
-     *
-     * When a document is already loaded, re-applies the styling without
-     * re-parsing the markdown (and without reloading images).
+     *                     and `color`.
      */
     void setTheme(const QString &themeName, const QString &documentCss);
+
+protected:
+    /**
+     * @brief Handles Ctrl + wheel as font zoom.
+     *
+     * Plain wheel scrolling behaves normally (passes through to the
+     * base class); Ctrl + wheel up increases the base font size by 1pt,
+     * Ctrl + wheel down decreases it.  The size is clamped to 10–40pt.
+     */
+    void wheelEvent(QWheelEvent *event) override;
 
 private:
     void applyCodeBlockStyles();

@@ -224,6 +224,37 @@ void MarkdownFilterProxyModel::rebuildCache()
     }
 }
 
+QVariant MarkdownFilterProxyModel::data(const QModelIndex &index,
+                                        int role) const
+{
+    QVariant value = QSortFilterProxyModel::data(index, role);
+
+    if (role != Qt::DisplayRole)
+        return value;
+
+    auto *fsm = qobject_cast<QFileSystemModel *>(sourceModel());
+    if (!fsm)
+        return value;
+
+    const QModelIndex src = mapToSource(index);
+    if (!src.isValid() || fsm->isDir(src))
+        return value;
+
+    // Strip only the two Markdown extensions — never a generic "anything
+    // after the last dot".  "README.backup.md" must become
+    // "README.backup", not "README".
+    const QString name = value.toString();
+    const int dotPos = name.lastIndexOf(u'.');
+    if (dotPos <= 0)   // no dot, or leading dot (hidden file)
+        return value;
+
+    const QString suffix = name.mid(dotPos + 1).toLower();
+    if (suffix == QStringLiteral("md") || suffix == QStringLiteral("markdown"))
+        return name.left(dotPos);
+
+    return value;
+}
+
 bool MarkdownFilterProxyModel::filterAcceptsRow(
     int sourceRow, const QModelIndex &sourceParent) const
 {

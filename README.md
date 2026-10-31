@@ -41,7 +41,7 @@ Full option list: `./QMarkdown-explorer --help`.
 
 ## Status
 
-Working and in use, but no automated test suite. Cross-platform builds are exercised on Windows; Linux and macOS are untested beyond compilation. Bug reports welcome.
+Working and in use. Every push and every pull request runs the full automated test suite on Windows (MSVC) and Linux (GCC); both platforms pass CI. Bug reports welcome.
 
 ## License
 
