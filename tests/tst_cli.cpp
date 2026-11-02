@@ -217,8 +217,6 @@ void TestCli::listStylesContainsKnownStyles()
     const QString out = QString::fromUtf8(p.stdoutBytes);
     QVERIFY2(out.contains(QStringLiteral("dark")),  "dark.qss not listed");
     QVERIFY2(out.contains(QStringLiteral("light")), "light.qss not listed");
-    QVERIFY2(out.contains(QStringLiteral("default")),
-             "default.qss not listed");
 }
 
 void TestCli::versionExitsZero()

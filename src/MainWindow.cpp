@@ -310,14 +310,17 @@ void MainWindow::populateStyleCombo()
 {
     m_styleCombo->clear();
 
-    // Index 0 is the “reset to platform default” entry.  Its item data
-    // is the empty string, which StyleLoader::apply() treats as “clear”.
-    m_styleCombo->addItem(tr("(Default)"), QString());
+    // Three fixed entries.  "System" clears the stylesheet, which is
+    // what Qt's default looks like with no QSS applied.  "Dark" and
+    // "Light" resolve to dark.qss / light.qss in the styles directory
+    // via StyleLoader::apply().
+    m_styleCombo->addItem(tr("System"), QString());
+    m_styleCombo->addItem(tr("Dark"),   QStringLiteral("dark"));
+    m_styleCombo->addItem(tr("Light"),  QStringLiteral("light"));
 
-    const QStringList names = styleLoader().availableStyles();
-    for (const QString &name : names)
-        m_styleCombo->addItem(name, name);
-
+    // Restore the saved selection.  If QSettings still holds the old
+    // "default" value (or any name no longer in the list), findData()
+    // returns -1 and we fall back to System.
     const QString saved = lastStyle();
     int idx = 0;
     if (!saved.isEmpty()) {
