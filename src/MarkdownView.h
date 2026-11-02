@@ -15,8 +15,7 @@ class QWheelEvent;
  *       ├─ read the file portably (std::filesystem + std::ifstream)
  *       ├─ ImageResolver::resolveRelativeImages(text, baseDir)
  *       ├─ register every resolved image on the document
- *       ├─ setMarkdown(resolvedText)
- *       └─ applyCodeBlockStyles()
+ *       └─ setMarkdown(resolvedText)
  *
  * @note The document owned by this widget is a `MarkdownDocument`, not a
  *       plain `QTextDocument`.  That subclass exists so that images
@@ -25,22 +24,23 @@ class QWheelEvent;
  *       plain document will find that images silently disappear from
  *       the rendered output.
  *
- * Code-block styling: fenced code blocks receive a
- * `QTextBlockFormat` background from `styles/code-<theme>.css`, applied
- * after `setMarkdown()` completes.  Inline code is intentionally not
- * styled — QTextCursor::mergeCharFormat() on inline ranges crashes
- * inside Qt 6.x.
+ * Layout: `setMarkdown()` runs under a `ScopedLayoutDisable` guard so
+ * the document lays out once instead of once per edit.  Without this a
+ * 500-row table takes minutes to load; with it, the same file loads in
+ * ~1.25 s.  Do not remove the guard.
  *
- * Layout: both `setMarkdown()` and `applyCodeBlockStyles()` run under a
- * `ScopedLayoutDisable` guard so the document lays out once instead of
- * once per edit.  Without this a 500-row table takes minutes to load;
- * with it, the same file loads in ~1.25 s.
+ * Text size: the base font is 11pt (larger than the 9pt application
+ * default, comfortable for long-form reading).  The user can adjust it
+ * with Ctrl + mouse wheel; the size is clamped to 10–40pt and persisted
+ * in QSettings.
  *
- * Text size: the base font is set to 13pt in the constructor — larger
- * than the 9pt application default, comfortable for long-form reading.
- * The user can adjust it further with Ctrl + mouse wheel; the wheel
- * handler clamps the range to 10–40pt so the text cannot shrink into
- * illegibility or grow until a single header fills the viewport.
+ * Document content is not styled by this class.  The appearance of the
+ * rendered markdown is entirely whatever QTextMarkdownImporter produces,
+ * plus whatever `setDefaultStyleSheet` accepts — see the note in the
+ * .cpp about that method’s limited reach.  Widget chrome (toolbar, tree,
+ * status bar, this widget’s own colours) is styled by the QSS files in
+ * styles/ via StyleLoader; that is a separate mechanism and is not
+ * affected by this class.
  */
 class MarkdownView : public QTextEdit
 {
@@ -52,21 +52,16 @@ public:
     /**
      * @brief Loads `filePath`, resolves image references, and renders.
      *
-     * @return `true` on success.  On failure the previous document is
-     *         left untouched.
+     * @param filePath  Native path to a Markdown file.  Must be a
+     *                  regular file; the check is performed inside.
+     *
+     * @return `true` on success.  On failure — missing file, unreadable
+     *         stream, or a `MarkdownDocument` that could not be
+     *         retrieved from the widget — the previous document is left
+     *         untouched, so the caller can surface an error without the
+     *         view going blank.
      */
     bool loadFile(const QString &filePath);
-
-    /**
-     * @brief Applies a theme and its document CSS.
-     *
-     * @param themeName    The style name as reported by StyleLoader
-     *                     (`"dark"`, `"light"`, or empty for default).
-     * @param documentCss  Contents of the theme’s `code-<name>.css`.
-     *                     Parsed for `background` / `background-color`
-     *                     and `color`.
-     */
-    void setTheme(const QString &themeName, const QString &documentCss);
 
 protected:
     /**
@@ -74,13 +69,11 @@ protected:
      *
      * Plain wheel scrolling behaves normally (passes through to the
      * base class); Ctrl + wheel up increases the base font size by 1pt,
-     * Ctrl + wheel down decreases it.  The size is clamped to 10–40pt.
+     * Ctrl + wheel down decreases it.  The size is clamped to 10–40pt
+     * and persisted to QSettings so the next launch uses the same size.
+     *
+     * The event is consumed when the zoom bounds are reached, so the
+     * viewport does not start scrolling at 10pt or 40pt.
      */
     void wheelEvent(QWheelEvent *event) override;
-
-private:
-    void applyCodeBlockStyles();
-
-    QString m_theme;
-    QString m_documentCss;
 };

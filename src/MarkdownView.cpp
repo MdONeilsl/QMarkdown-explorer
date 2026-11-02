@@ -5,14 +5,9 @@
 
 #include <QApplication>
 #include <QByteArray>
-#include <QColor>
 #include <QFont>
-#include <QRegularExpression>
 #include <QSettings>
 #include <QString>
-#include <QTextBlock>
-#include <QTextBlockFormat>
-#include <QTextCharFormat>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextEdit>
@@ -36,41 +31,22 @@ std::filesystem::path toFsPath(const QString &qstr)
     return std::filesystem::path(u8);
 }
 
-QColor extractColor(const QString &css, const QString &propPattern)
-{
-    if (css.isEmpty())
-        return {};
-
-    const QRegularExpression re(
-        QStringLiteral("(?<![\\w-])%1\\s*:\\s*([^;\\}]+)")
-            .arg(propPattern));
-    const auto m = re.match(css);
-    if (!m.hasMatch())
-        return {};
-
-    const QString value = m.captured(1).trimmed();
-    if (value.isEmpty())
-        return {};
-
-    return QColor(value);
-}
-
 /**
  * @brief RAII guard that disables layout on a QTextDocument during a
  *        bulk-edit sequence, then re-enables it and triggers a single
  *        layout pass on destruction.
  *
  * QTextDocument re-lays out the document on every edit unless layout is
- * explicitly disabled.  For a bulk sequence — inserting a large
- * markdown document, then styling every fenced code block — that means
- * one layout per edit.  In practice this is what turned a 500-row
- * markdown table from 1.3 s into over 5 minutes: QTextTable's per-edit
- * layout work is expensive, and every row added by the importer
- * triggered one.
+ * explicitly disabled.  For a bulk insertion — the markdown importer
+ * adding every row of a table, every paragraph of a document — that
+ * means one layout per edit.  In practice this turned a 500-row markdown
+ * table from ~1.25 s into over 5 minutes: QTextTable's per-edit layout
+ * work is expensive, and every row added by the importer triggered one.
  *
  * With the guard in place, no layout runs until all edits have been
  * applied.  The destructor fires even on early `return` paths, so no
- * caller can accidentally leave layout off.
+ * caller can accidentally leave layout off.  Re-enabling layout triggers
+ * the deferred layout pass at a single, predictable point.
  */
 class ScopedLayoutDisable
 {
@@ -125,9 +101,9 @@ MarkdownView::MarkdownView(QWidget *parent)
 
     // Restore the saved font size.  QTextEdit inherits the application
     // default, which on Windows is typically 9pt — too small for
-    // long-form reading.  The first launch uses kDefaultZoomPt (13pt),
-    // which is a comfortable base for prose; subsequent launches use
-    // whatever the user last selected with Ctrl + mouse wheel.
+    // long-form reading.  The first launch uses kDefaultZoomPt, which is
+    // a comfortable base for prose; subsequent launches use whatever the
+    // user last selected with Ctrl + mouse wheel.
     //
     // Clamped on read: a corrupted or out-of-range value in the settings
     // store cannot produce text smaller than kMinZoomPt or larger than
@@ -185,83 +161,6 @@ void MarkdownView::wheelEvent(QWheelEvent *event)
         // through to the base class and scroll the viewport.
         event->accept();
     }
-}
-
-void MarkdownView::setTheme(const QString &themeName,
-                            const QString &documentCss)
-{
-    const bool changed = (m_theme != themeName)
-                      || (m_documentCss != documentCss);
-
-    m_theme = themeName;
-    m_documentCss = documentCss;
-
-    if (!changed)
-        return;
-
-    // A theme switch re-applies block backgrounds to every fenced code
-    // block in the loaded document.  Wrapping the styling pass in the
-    // same layout guard used by loadFile() collapses what would
-    // otherwise be one layout per styled block into a single layout at
-    // the end.  For documents with many code blocks the difference is
-    // measurable; for documents with none, the guard costs nothing.
-    ScopedLayoutDisable layoutGuard(document());
-    applyCodeBlockStyles();
-}
-
-void MarkdownView::applyCodeBlockStyles()
-{
-    auto *doc = document();
-    if (!doc)
-        return;
-
-    const QColor bg = extractColor(m_documentCss,
-                                   QStringLiteral("background(?:-color)?"));
-    const QColor fg = extractColor(m_documentCss,
-                                   QStringLiteral("color"));
-
-    if (!bg.isValid() && !fg.isValid())
-        return;
-
-    if (doc->characterCount() <= 1)
-        return;
-
-    QList<int> fencedPositions;
-    for (QTextBlock b = doc->begin(); b.isValid(); b = b.next()) {
-        if (b.blockFormat().nonBreakableLines())
-            fencedPositions.append(b.position());
-    }
-
-    if (fencedPositions.isEmpty())
-        return;
-
-    QTextCursor batch(doc);
-    batch.beginEditBlock();
-
-    for (int pos : fencedPositions) {
-        QTextBlock b = doc->findBlock(pos);
-        if (!b.isValid())
-            continue;
-
-        if (bg.isValid()) {
-            QTextBlockFormat bf = b.blockFormat();
-            bf.setBackground(bg);
-            QTextCursor c(b);
-            c.setBlockFormat(bf);
-        }
-
-        if (fg.isValid() && b.length() > 1) {
-            QTextCursor c(doc);
-            c.setPosition(b.position());
-            c.setPosition(b.position() + b.length() - 1,
-                          QTextCursor::KeepAnchor);
-            QTextCharFormat cf;
-            cf.setForeground(fg);
-            c.mergeCharFormat(cf);
-        }
-    }
-
-    batch.endEditBlock();
 }
 
 bool MarkdownView::loadFile(const QString &filePath)
@@ -343,23 +242,28 @@ bool MarkdownView::loadFile(const QString &filePath)
     for (const ResolvedImage &entry : resolved.images)
         doc->setImage(entry.url, entry.image);
 
-    // -- 3. Render and style under a single layout pass -----------------
+    // -- 3. Render under a single layout pass ---------------------------
     //
-    // Both setMarkdown() (which builds the document) and
-    // applyCodeBlockStyles() (which mutates block formats) trigger
-    // QTextDocument layout work on every edit.  For a 500-row markdown
-    // table that compounds to minutes.  The ScopedLayoutDisable guard
-    // suppresses layout for both operations and lets it run once, at
+    // setMarkdown() triggers QTextDocument layout work on every edit
+    // (every paragraph, every table row).  For a 500-row markdown table
+    // that compounds to minutes.  The ScopedLayoutDisable guard
+    // suppresses layout for the whole insertion and lets it run once, at
     // scope exit.  This is the single biggest factor in load performance
     // for table-heavy documents.
+    //
+    // Note on document content styling: QTextDocument::setDefaultStyleSheet()
+    // is consulted by setHtml(), not by setMarkdown().  The importer that
+    // setMarkdown() uses writes its own char and block formats and does not
+    // read the stylesheet.  So any CSS applied via setDefaultStyleSheet
+    // before setMarkdown() has limited reach — some base properties get
+    // through, element selectors largely do not.  Full CSS control requires
+    // an HTML pipeline (QTextDocumentFragment::fromMarkdown().toHtml() +
+    // setHtml()).  This class currently uses neither; the rendered output
+    // is whatever QTextMarkdownImporter produces.
     {
         ScopedLayoutDisable layoutGuard(doc);
 
         setMarkdown(resolved.text);
-
-        // Must run after setMarkdown(): the markdown importer rewrites
-        // the document, so formats applied beforehand would be lost.
-        applyCodeBlockStyles();
     }
 
     return true;

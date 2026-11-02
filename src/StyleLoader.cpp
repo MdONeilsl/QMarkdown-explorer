@@ -117,33 +117,6 @@ std::filesystem::path StyleLoader::pathFor(const QString &styleName) const
     return candidate;
 }
 
-QString StyleLoader::documentCss(const QString &styleName) const
-{
-    if (m_directory.empty())
-        return {};
-
-    // Helper: try to read one file from the styles directory, returning
-    // empty when the file does not exist or cannot be opened.
-    auto tryLoad = [this](const QString &filename) -> QString {
-        const std::filesystem::path p = m_directory / toFsPath(filename);
-        std::error_code ec;
-        if (!std::filesystem::is_regular_file(p, ec) || ec)
-            return {};
-        return readTextFile(p);
-    };
-
-    // Prefer the theme-specific file, then the default.
-    if (!styleName.isEmpty()) {
-        const QString primary =
-            QStringLiteral("code-%1.css").arg(styleName);
-        const QString content = tryLoad(primary);
-        if (!content.isEmpty())
-            return content;
-    }
-
-    return tryLoad(QStringLiteral("code-default.css"));
-}
-
 void StyleLoader::apply(const QString &styleName) const
 {
     auto *app = qobject_cast<QApplication *>(QCoreApplication::instance());
