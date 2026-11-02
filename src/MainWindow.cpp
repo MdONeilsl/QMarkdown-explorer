@@ -304,6 +304,16 @@ void MainWindow::wireModelAndView()
             this, &MainWindow::handleTreeActivated);
     connect(m_treeView, &QTreeView::clicked,
             this, &MainWindow::handleTreeClicked);
+
+    connect(m_markdownView, &MarkdownView::linkToLocalFileRequested,
+        this, [this](const QString &absolutePath) {
+            // The signal already validates that the target is a
+            // file inside the root.  openMarkdownFile() re-checks
+            // the suffix and refuses anything that is not .md /
+            // .markdown, which is the correct policy for a
+            // click-navigated link.
+            openMarkdownFile(absolutePath);
+        });
 }
 
 void MainWindow::populateStyleCombo()
@@ -365,6 +375,8 @@ void MainWindow::setRootFolder(const QString &folderPath)
     m_treeView->setRootIndex(proxyRoot);
 
     m_rootFolder = folderPath;
+     if (m_markdownView)
+        m_markdownView->setRootFolder(folderPath);
     m_currentFile.clear();
     saveLastFolder(folderPath);
 
@@ -467,6 +479,16 @@ void MainWindow::handleStyleChanged(int index)
     const QString styleName = m_styleCombo->itemData(index).toString();
     styleLoader().apply(styleName);
     saveLastStyle(styleName);
+
+    // Forward the theme name plus its code-block background.  The name
+    // is used only for short-circuit comparisons; the colour is what
+    // paints fenced blocks.  An invalid QColor (System, or missing
+    // code-*.css) leaves Qt’s default code-block appearance untouched.
+    if (m_markdownView) {
+        m_markdownView->setTheme(
+            styleName,
+            styleLoader().codeBlockBackground(styleName));
+    }
 }
 
 // -----------------------------------------------------------------------------

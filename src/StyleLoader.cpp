@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QByteArray>
 #include <QString>
+#include <QRegularExpression>
 
 #include <algorithm>
 #include <cstddef>
@@ -141,4 +142,39 @@ void StyleLoader::apply(const QString &styleName) const
     }
 
     app->setStyleSheet(qss);
+}
+
+QColor StyleLoader::codeBlockBackground(const QString &themeName) const
+{
+    // Empty theme name = System.  No code-block styling: the pass in
+    // MarkdownView checks isValid() and becomes a no-op, which lets
+    // Qt’s importer defaults show through unchanged.
+    if (themeName.isEmpty())
+        return {};
+
+    const QString fileName =
+        QStringLiteral("code-%1.css").arg(themeName);
+    const std::filesystem::path path = m_directory / toFsPath(fileName);
+
+    const QString css = readTextFile(path);
+    if (css.isEmpty())
+        return {};
+
+    // First `background` / `background-color` declaration inside a
+    // `pre { … }` rule.  Non-greedy scan: stops at the first match, so
+    // a file with multiple `pre` rules contributes only the first one.
+    // Values with whitespace (e.g. `background: rgb(1, 2, 3)`) or a URL
+    // fallback (`background: #fff url(…)`) capture just the leading
+    // token — the intent is a solid colour, and anything more elaborate
+    // simply produces an invalid QColor and disables the styling.
+    static const QRegularExpression re(
+        QStringLiteral(
+            R"RX(\bpre\s*\{[^}]*?\bbackground(?:-color)?\s*:\s*([^;}\s]+))RX"),
+        QRegularExpression::CaseInsensitiveOption);
+
+    const auto m = re.match(css);
+    if (!m.hasMatch())
+        return {};
+
+    return QColor(m.captured(1).trimmed());
 }
