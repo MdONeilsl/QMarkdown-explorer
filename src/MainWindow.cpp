@@ -8,7 +8,6 @@
 #include "StyleLoader.h"
 #include "config.h"
 
-#include <QStandardPaths>
 #include <QAction>
 #include <QAbstractItemView>
 #include <QByteArray>
@@ -29,6 +28,7 @@
 #include <QSettings>
 #include <QSizePolicy>
 #include <QSplitter>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QStringList>
 #include <QStyle>
@@ -64,6 +64,10 @@ StyleLoader &styleLoader()
 
 } // namespace
 
+// -----------------------------------------------------------------------------
+//  Construction / destruction
+// -----------------------------------------------------------------------------
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
@@ -96,7 +100,11 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_styleCombo, &QComboBox::currentIndexChanged,
             this, &MainWindow::handleStyleChanged);
 
-        QTimer::singleShot(0, this, [this]() {
+    // Deferred folder picker: run after show() so the dialog is parented
+    // to an already-visible window and the event loop is live.  A
+    // synchronous call here would show a modal dialog before the main
+    // window is on screen.
+    QTimer::singleShot(0, this, [this]() {
         QSettings launchSettings;
 
         // --folder <path>: load the folder directly and skip the picker.
@@ -149,6 +157,10 @@ MainWindow::MainWindow(QWidget *parent)
 }
 
 MainWindow::~MainWindow() = default;
+
+// -----------------------------------------------------------------------------
+//  One-time construction helpers
+// -----------------------------------------------------------------------------
 
 void MainWindow::buildCentralWidget()
 {
@@ -229,6 +241,17 @@ void MainWindow::buildStatusBar()
     sb->setObjectName(QStringLiteral("appStatusBar"));
     sb->setSizeGripEnabled(true);
 
+    m_qtButton = new QToolButton(sb);
+    m_qtButton->setObjectName(QStringLiteral("qtButton"));
+    m_qtButton->setAutoRaise(true);
+    m_qtButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    m_qtButton->setIconSize(QSize(20, 20));
+    m_qtButton->setToolTip(tr("About Qt"));
+    m_qtButton->setIcon(StatusBarIcons::qtLogoIcon());
+    connect(m_qtButton, &QToolButton::clicked,
+            this, &MainWindow::showQtAbout);
+    sb->addPermanentWidget(m_qtButton);
+
     m_githubButton = new QToolButton(sb);
     m_githubButton->setObjectName(QStringLiteral("githubButton"));
     m_githubButton->setAutoRaise(true);
@@ -247,17 +270,6 @@ void MainWindow::buildStatusBar()
     connect(m_githubButton, &QToolButton::clicked,
             this, &MainWindow::showRepoMenu);
     sb->addPermanentWidget(m_githubButton);
-    
-    m_qtButton = new QToolButton(sb);
-    m_qtButton->setObjectName(QStringLiteral("qtButton"));
-    m_qtButton->setAutoRaise(true);
-    m_qtButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    m_qtButton->setIconSize(QSize(20, 20));
-    m_qtButton->setToolTip(tr("About Qt"));
-    m_qtButton->setIcon(StatusBarIcons::qtLogoIcon());
-    connect(m_qtButton, &QToolButton::clicked,
-            this, &MainWindow::showQtAbout);
-    sb->addPermanentWidget(m_qtButton);
 
     // Parented to the button so it inherits the correct style; the menu
     // is reconstructed on every open (see rebuildRepoMenu()).
@@ -292,20 +304,33 @@ void MainWindow::wireModelAndView()
             this, &MainWindow::handleTreeActivated);
     connect(m_treeView, &QTreeView::clicked,
             this, &MainWindow::handleTreeClicked);
+
+    connect(m_markdownView, &MarkdownView::linkToLocalFileRequested,
+        this, [this](const QString &absolutePath) {
+            // The signal already validates that the target is a
+            // file inside the root.  openMarkdownFile() re-checks
+            // the suffix and refuses anything that is not .md /
+            // .markdown, which is the correct policy for a
+            // click-navigated link.
+            openMarkdownFile(absolutePath);
+        });
 }
 
 void MainWindow::populateStyleCombo()
 {
     m_styleCombo->clear();
 
-    // Index 0 is the “reset to platform default” entry.  Its item data
-    // is the empty string, which StyleLoader::apply() treats as “clear”.
-    m_styleCombo->addItem(tr("(Default)"), QString());
+    // Three fixed entries.  "System" clears the stylesheet, which is
+    // what Qt's default looks like with no QSS applied.  "Dark" and
+    // "Light" resolve to dark.qss / light.qss in the styles directory
+    // via StyleLoader::apply().
+    m_styleCombo->addItem(tr("System"), QString());
+    m_styleCombo->addItem(tr("Dark"),   QStringLiteral("dark"));
+    m_styleCombo->addItem(tr("Light"),  QStringLiteral("light"));
 
-    const QStringList names = styleLoader().availableStyles();
-    for (const QString &name : names)
-        m_styleCombo->addItem(name, name);
-
+    // Restore the saved selection.  If QSettings still holds the old
+    // "default" value (or any name no longer in the list), findData()
+    // returns -1 and we fall back to System.
     const QString saved = lastStyle();
     int idx = 0;
     if (!saved.isEmpty()) {
@@ -315,6 +340,10 @@ void MainWindow::populateStyleCombo()
     }
     m_styleCombo->setCurrentIndex(idx);
 }
+
+// -----------------------------------------------------------------------------
+//  Runtime state transitions
+// -----------------------------------------------------------------------------
 
 void MainWindow::openFolderDialog()
 {
@@ -346,6 +375,8 @@ void MainWindow::setRootFolder(const QString &folderPath)
     m_treeView->setRootIndex(proxyRoot);
 
     m_rootFolder = folderPath;
+     if (m_markdownView)
+        m_markdownView->setRootFolder(folderPath);
     m_currentFile.clear();
     saveLastFolder(folderPath);
 
@@ -449,18 +480,20 @@ void MainWindow::handleStyleChanged(int index)
     styleLoader().apply(styleName);
     saveLastStyle(styleName);
 
-    // Forward both the theme name and its document CSS to the viewer.
-    // The theme name is remembered for subsequent setTheme() calls that
-    // only re-apply (no-op if unchanged); the CSS string is what
-    // MarkdownView parses for code-block colours.  Guarded because the
-    // constructor calls this before m_markdownView is guaranteed to be
-    // assigned — the guard costs nothing and avoids a null deref if the
-    // construction order changes.
+    // Forward the theme name plus its code-block background.  The name
+    // is used only for short-circuit comparisons; the colour is what
+    // paints fenced blocks.  An invalid QColor (System, or missing
+    // code-*.css) leaves Qt’s default code-block appearance untouched.
     if (m_markdownView) {
-        m_markdownView->setTheme(styleName,
-                                 styleLoader().documentCss(styleName));
+        m_markdownView->setTheme(
+            styleName,
+            styleLoader().codeBlockBackground(styleName));
     }
 }
+
+// -----------------------------------------------------------------------------
+//  Search
+// -----------------------------------------------------------------------------
 
 void MainWindow::handleSearchTextChanged(const QString &text)
 {
@@ -487,6 +520,10 @@ void MainWindow::applySearchText()
     // empty-string fast path.
     m_filterProxy->setSearchText(m_searchEdit->text().trimmed());
 }
+
+// -----------------------------------------------------------------------------
+//  Status-bar buttons
+// -----------------------------------------------------------------------------
 
 void MainWindow::showQtAbout()
 {
@@ -652,6 +689,10 @@ void MainWindow::addRepository()
         break;
     }
 }
+
+// -----------------------------------------------------------------------------
+//  QSettings helpers
+// -----------------------------------------------------------------------------
 
 QString MainWindow::lastFolder() const
 {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QColor>
 #include <QString>
 #include <QTextEdit>
 
@@ -8,39 +9,43 @@ class QWheelEvent;
 /**
  * @brief Read-only Markdown renderer.
  *
- * Encapsulates the full “file → image-resolved text → rendered document”
- * pipeline behind a single entry point, `loadFile()`:
+ * Load-and-render pipeline:
  *
  *     loadFile(path)
  *       ├─ read the file portably (std::filesystem + std::ifstream)
- *       ├─ ImageResolver::resolveRelativeImages(text, baseDir)
- *       ├─ register every resolved image on the document
- *       ├─ setMarkdown(resolvedText)
- *       └─ applyCodeBlockStyles()
+ *       ├─ convert web links to plain text        (hyperlink rule 2)
+ *       ├─ ImageResolver::resolveRelativeImages
+ *       ├─ register resolved images on the document
+ *       ├─ set per-file CSS on the document       (HTML reachability)
+ *       └─ { ScopedLayoutDisable
+ *            setMarkdown(resolvedText)
+ *            applyDocumentStyles()                 (single pass)
+ *          }
  *
- * @note The document owned by this widget is a `MarkdownDocument`, not a
- *       plain `QTextDocument`.  That subclass exists so that images
- *       registered before `setMarkdown()` survive the importer’s
- *       internal `clear()`; a future maintainer who replaces it with a
- *       plain document will find that images silently disappear from
- *       the rendered output.
+ * Hyperlinks:
+ *   * Local links are clickable and emit linkToLocalFileRequested with
+ *     the resolved absolute path.  The path is validated against the
+ *     root folder — anything outside the root is rejected (rule 1).
+ *   * Web links (http:// and https://) are converted to plain text
+ *     before markdown parsing, so they are visible and copyable but
+ *     never clickable (rule 2).
  *
- * Code-block styling: fenced code blocks receive a
- * `QTextBlockFormat` background from `styles/code-<theme>.css`, applied
- * after `setMarkdown()` completes.  Inline code is intentionally not
- * styled — QTextCursor::mergeCharFormat() on inline ranges crashes
- * inside Qt 6.x.
+ * Per-file CSS:
+ *   Loading `<root>/x/y/abc.md` also loads `<root>/css/abc.css`, if it
+ *   exists, and applies it via setDefaultStyleSheet() before setMarkdown
+ *   runs.  setMarkdown does not consult this stylesheet for its own
+ *   element rendering, but it *is* reached by HTML that the markdown
+ *   importer delegates to setHtml().  Document authors who want styled
+ *   HTML blocks place a CSS file there.  Always set (to content or to
+ *   empty) so a previous file’s CSS does not leak into the next.
  *
- * Layout: both `setMarkdown()` and `applyCodeBlockStyles()` run under a
- * `ScopedLayoutDisable` guard so the document lays out once instead of
- * once per edit.  Without this a 500-row table takes minutes to load;
- * with it, the same file loads in ~1.25 s.
- *
- * Text size: the base font is set to 13pt in the constructor — larger
- * than the 9pt application default, comfortable for long-form reading.
- * The user can adjust it further with Ctrl + mouse wheel; the wheel
- * handler clamps the range to 10–40pt so the text cannot shrink into
- * illegibility or grow until a single header fills the viewport.
+ * Post-processing scope (applyDocumentStyles):
+ *   * Fenced code blocks: block background from the theme’s
+ *     `code-*.css`, colour extracted by StyleLoader; no char format
+ *     mutation, so Ctrl+wheel zoom keeps working on code text.
+ *   * Headings h1, h2, h3: additional top margin in line-height units.
+ *     Block format only, so font zoom keeps working on headings.
+ *   * Everything else: Qt’s importer defaults, untouched.
  */
 class MarkdownView : public QTextEdit
 {
@@ -50,37 +55,54 @@ public:
     explicit MarkdownView(QWidget *parent = nullptr);
 
     /**
-     * @brief Loads `filePath`, resolves image references, and renders.
+     * @brief Sets the root folder used to validate local link targets
+     *        and to locate per-file CSS.
      *
-     * @return `true` on success.  On failure the previous document is
-     *         left untouched.
+     * Must be called before loading any file.  An empty root rejects
+     * all local links and disables per-file CSS (the safety default
+     * for standalone use and tests).
      */
+    void setRootFolder(const QString &rootFolder);
+
+    /**
+     * @brief Sets the active theme and its code-block background.
+     *
+     * @param themeName             `"dark"`, `"light"`, or empty for
+     *                              System.  Used only to short-circuit
+     *                              identical re-applications.
+     * @param codeBlockBackground   Colour to paint behind fenced blocks,
+     *                              or an invalid QColor to leave Qt’s
+     *                              default in place.  MainWindow reads
+     *                              this from `StyleLoader::codeBlockBackground()`.
+     *
+     * When a document is already loaded, the post-processing pass
+     * re-runs on the current document so the change is visible
+     * immediately.
+     */
+    void setTheme(const QString &themeName,
+                  const QColor &codeBlockBackground);
+
     bool loadFile(const QString &filePath);
 
+signals:
     /**
-     * @brief Applies a theme and its document CSS.
+     * @brief Emitted when the user clicks a local link inside a
+     *        rendered document.
      *
-     * @param themeName    The style name as reported by StyleLoader
-     *                     (`"dark"`, `"light"`, or empty for default).
-     * @param documentCss  Contents of the theme’s `code-<name>.css`.
-     *                     Parsed for `background` / `background-color`
-     *                     and `color`.
+     * The path is absolute, canonical, and guaranteed to lie inside the
+     * current root folder.
      */
-    void setTheme(const QString &themeName, const QString &documentCss);
+    void linkToLocalFileRequested(const QString &absolutePath);
 
 protected:
-    /**
-     * @brief Handles Ctrl + wheel as font zoom.
-     *
-     * Plain wheel scrolling behaves normally (passes through to the
-     * base class); Ctrl + wheel up increases the base font size by 1pt,
-     * Ctrl + wheel down decreases it.  The size is clamped to 10–40pt.
-     */
     void wheelEvent(QWheelEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
 
 private:
-    void applyCodeBlockStyles();
+    void applyDocumentStyles();
 
     QString m_theme;
-    QString m_documentCss;
+    QColor  m_codeBg;            // invalid => System behaviour
+    QString m_currentFilePath;
+    QString m_rootFolder;
 };

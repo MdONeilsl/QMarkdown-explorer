@@ -5,9 +5,12 @@
 
 #include <QApplication>
 #include <QByteArray>
-#include <QColor>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QFont>
 #include <QRegularExpression>
+#include <QRegularExpressionMatch>
 #include <QSettings>
 #include <QString>
 #include <QTextBlock>
@@ -16,7 +19,11 @@
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextEdit>
+#include <QUrl>
 #include <QWheelEvent>
+#include <QMouseEvent>
+#include <QFontMetrics>
+#include <QTextFragment>
 
 #include <cstddef>
 #include <filesystem>
@@ -36,41 +43,19 @@ std::filesystem::path toFsPath(const QString &qstr)
     return std::filesystem::path(u8);
 }
 
-QColor extractColor(const QString &css, const QString &propPattern)
-{
-    if (css.isEmpty())
-        return {};
-
-    const QRegularExpression re(
-        QStringLiteral("(?<![\\w-])%1\\s*:\\s*([^;\\}]+)")
-            .arg(propPattern));
-    const auto m = re.match(css);
-    if (!m.hasMatch())
-        return {};
-
-    const QString value = m.captured(1).trimmed();
-    if (value.isEmpty())
-        return {};
-
-    return QColor(value);
-}
-
 /**
  * @brief RAII guard that disables layout on a QTextDocument during a
  *        bulk-edit sequence, then re-enables it and triggers a single
  *        layout pass on destruction.
  *
- * QTextDocument re-lays out the document on every edit unless layout is
- * explicitly disabled.  For a bulk sequence — inserting a large
- * markdown document, then styling every fenced code block — that means
- * one layout per edit.  In practice this is what turned a 500-row
- * markdown table from 1.3 s into over 5 minutes: QTextTable's per-edit
- * layout work is expensive, and every row added by the importer
- * triggered one.
+ * QTextDocument re-lays out on every edit unless layout is explicitly
+ * disabled.  For a bulk insertion — the markdown importer adding every
+ * row of a table, every paragraph of a document — that means one
+ * layout per edit.  In practice this turned a 500-row markdown table
+ * from ~1.25 s into over 5 minutes.
  *
- * With the guard in place, no layout runs until all edits have been
- * applied.  The destructor fires even on early `return` paths, so no
- * caller can accidentally leave layout off.
+ * The destructor fires even on early `return` paths, so no caller can
+ * accidentally leave layout off.
  */
 class ScopedLayoutDisable
 {
@@ -97,17 +82,116 @@ private:
     QTextDocument *m_doc = nullptr;
 };
 
-// Zoom range applied by wheelEvent().  Exposed as constants so a future
-// tuning pass does not need to search for the literals.
+// Zoom range applied by wheelEvent().
 constexpr int kMinZoomPt = 10;
 constexpr int kMaxZoomPt = 40;
 constexpr int kDefaultZoomPt = 11;
 
-// QSettings key holding the user's preferred reading size.  Matches the
-// pattern of MainWindow's keys ("Style", "LastFolder", "Language") —
-// same organization and application identity, so the value lives
-// alongside the rest of the user's preferences.
+// QSettings key holding the user’s preferred reading size.
 constexpr const char *kSettingsKey = "FontPointSize";
+
+/**
+ * @brief Converts markdown links whose target is a web URL into plain
+ *        text showing the full URL.
+ *
+ * Hyperlink rule 2: web links must not be clickable, and the full URL
+ * must be visible so the user can copy/paste it without triggering a
+ * browser.
+ *
+ * Transformation:
+ *
+ *     [click here](https://example.com)     →  click here (https://example.com)
+ *     [https://example.com](https://example.com)  →  https://example.com
+ *     [docs](<https://example.com> "title")  →  docs (https://example.com)
+ *
+ * Notes:
+ *   * Only http:// and https:// are converted.  Other schemes
+ *     (mailto:, ftp:, …) are left as anchors and are silently ignored
+ *     by the click handler, which only accepts local file links.
+ *   * Image syntax ![alt](url) is not touched — the leading `!` blocks
+ *     the match.  ImageResolver handles those separately.
+ *   * Reference-style links ([text][ref] + [ref]: url) are not
+ *     transformed by this function because the URL lives on a separate
+ *     line.  They remain anchors and are rejected by the click handler.
+ */
+QString convertWebLinksToPlainText(const QString &markdown)
+{
+    static const QRegularExpression re(
+        QStringLiteral(
+            R"RX((?<!!)\[([^\]]*)\]\(\s*(?:<(https?://[^>]+)>|(https?://[^)\s]+))(?:\s+(?:"[^"]*"|'[^']*'))?\s*\))RX"),
+        QRegularExpression::CaseInsensitiveOption);
+
+    QString result;
+    result.reserve(markdown.size());
+
+    qsizetype lastEnd = 0;
+    auto it = re.globalMatch(markdown);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        result.append(markdown.mid(lastEnd, m.capturedStart() - lastEnd));
+
+        const QString text = m.captured(1).trimmed();
+        const QString url = (m.capturedStart(2) >= 0)
+                                ? m.captured(2)
+                                : m.captured(3);
+
+        if (text.isEmpty() || text == url) {
+            // Avoid `https://x (https://x)`; the URL alone is enough.
+            result.append(url);
+        } else {
+            result.append(text);
+            result.append(QStringLiteral(" ("));
+            result.append(url);
+            result.append(QStringLiteral(")"));
+        }
+
+        lastEnd = m.capturedEnd();
+    }
+    result.append(markdown.mid(lastEnd));
+
+    return result;
+}
+
+/**
+ * @brief Returns the markdown heading level of a block, or 0 if it is
+ *        not a heading.
+ *
+ * Preferred signal: QTextBlockFormat::headingLevel(), populated by
+ * QTextMarkdownImporter on Qt 6.4+.
+ *
+ * Fallback: font-size ratio to the base.  The importer renders headings
+ * with absolute point sizes computed from the base font, so the ratio
+ * distinguishes levels reliably even when headingLevel() is unavailable.
+ * Thresholds match the importer’s scaling (h1 ~2em, h2 ~1.5em,
+ * h3 ~1.17em), with tolerance for rounding.
+ *
+ * Returns 0 for non-headings and for h4–h6 (the project only wants
+ * additional spacing above h1, h2, h3).
+ */
+int detectHeadingLevel(const QTextBlock &block, double basePt)
+{
+    const int explicitLevel = block.blockFormat().headingLevel();
+    if (explicitLevel >= 1 && explicitLevel <= 6)
+        return explicitLevel;
+
+    if (basePt <= 0.0)
+        return 0;
+
+    for (auto it = block.begin(); !it.atEnd(); ++it) {
+        const QTextFragment frag = it.fragment();
+        if (!frag.isValid() || frag.length() <= 0)
+            continue;
+        const double size = frag.charFormat().fontPointSize();
+        if (size <= 0.0)
+            continue;
+        const double ratio = size / basePt;
+        if (ratio >= 1.75) return 1;
+        if (ratio >= 1.35) return 2;
+        if (ratio >= 1.10) return 3;
+        return 0;
+    }
+    return 0;
+}
 
 } // namespace
 
@@ -119,21 +203,20 @@ MarkdownView::MarkdownView(QWidget *parent)
     setAcceptRichText(true);
     setTabChangesFocus(true);
 
+    // Enable link activation.  setReadOnly(true) only allows text
+    // selection; links need the explicit interaction flag.  QTextEdit
+    // has no setOpenExternalLinks property — that is a QTextBrowser-only
+    // convenience — so anchors emit anchorClicked and we decide what to
+    // do with each URL ourselves.
+    setTextInteractionFlags(Qt::TextBrowserInteraction);
+
+
     auto *doc = new MarkdownDocument(this);
     setDocument(doc);
     doc->setDocumentMargin(16);
 
-    // Restore the saved font size.  QTextEdit inherits the application
-    // default, which on Windows is typically 9pt — too small for
-    // long-form reading.  The first launch uses kDefaultZoomPt (13pt),
-    // which is a comfortable base for prose; subsequent launches use
-    // whatever the user last selected with Ctrl + mouse wheel.
-    //
-    // Clamped on read: a corrupted or out-of-range value in the settings
-    // store cannot produce text smaller than kMinZoomPt or larger than
-    // kMaxZoomPt.  This is the same safeguard wheelEvent applies on
-    // write, so the persisted value and the in-memory value can never
-    // diverge outside the allowed range.
+    // Restore the saved font size.  See the QSettings comment in
+    // wheelEvent for the write side.
     int savedPt = QSettings().value(QString::fromLatin1(kSettingsKey),
                                      kDefaultZoomPt).toInt();
     if (savedPt < kMinZoomPt)
@@ -146,9 +229,34 @@ MarkdownView::MarkdownView(QWidget *parent)
     setFont(f);
 }
 
+void MarkdownView::setRootFolder(const QString &rootFolder)
+{
+    m_rootFolder = rootFolder;
+}
+
+void MarkdownView::setTheme(const QString &themeName,
+                            const QColor &codeBlockBackground)
+{
+    const bool nameChanged = (m_theme != themeName);
+    const bool colorChanged = (m_codeBg != codeBlockBackground);
+
+    m_theme = themeName;
+    m_codeBg = codeBlockBackground;
+
+    if (!nameChanged && !colorChanged)
+        return;
+
+    // Re-apply the post-processing pass when a document is already
+    // loaded.  The guard matters: without it each styled block would
+    // trigger a relayout during the pass.
+    if (!document()->isEmpty()) {
+        ScopedLayoutDisable layoutGuard(document());
+        applyDocumentStyles();
+    }
+}
+
 void MarkdownView::wheelEvent(QWheelEvent *event)
 {
-    // Plain wheel: normal scrolling.  Do not intercept.
     if (!(event->modifiers() & Qt::ControlModifier)) {
         QTextEdit::wheelEvent(event);
         return;
@@ -156,16 +264,10 @@ void MarkdownView::wheelEvent(QWheelEvent *event)
 
     const int delta = event->angleDelta().y();
     if (delta == 0) {
-        // Horizontal or zero-delta wheel event with Ctrl held — nothing
-        // for us to do; let it through in case some platform attaches
-        // meaning to it.
         event->ignore();
         return;
     }
 
-    // The bounds check reads font().pointSize() because zoomIn() and
-    // zoomOut() operate relative to the widget's current font.  Reading
-    // it before each call keeps the value in sync with the last zoom.
     const int current = font().pointSize() > 0
                             ? font().pointSize()
                             : kDefaultZoomPt;
@@ -181,84 +283,157 @@ void MarkdownView::wheelEvent(QWheelEvent *event)
         QSettings().setValue(QString::fromLatin1(kSettingsKey),
                              font().pointSize());
     } else {
-        // Already at the bound — consume the event so it does not fall
-        // through to the base class and scroll the viewport.
         event->accept();
     }
 }
 
-void MarkdownView::setTheme(const QString &themeName,
-                            const QString &documentCss)
+void MarkdownView::mouseReleaseEvent(QMouseEvent *event)
 {
-    const bool changed = (m_theme != themeName)
-                      || (m_documentCss != documentCss);
+    // QTextEdit has no anchorClicked signal — that is QTextBrowser-only.
+    // The documented workaround is to intercept the mouse release and
+    // ask anchorAt() whether a link sits under the cursor position.
+    // anchorAt() returns the href string, or an empty QString when
+    // there is no anchor at that point.
+    if (event->button() == Qt::LeftButton) {
+        const QString href = anchorAt(event->pos());
+        if (!href.isEmpty()) {
+            const QUrl url(href);
 
-    m_theme = themeName;
-    m_documentCss = documentCss;
+            // Rule 2 guard: web links should already have been
+            // converted to plain text by convertWebLinksToPlainText().
+            // If an http/https URL somehow survives as an anchor,
+            // reject it — do not let a click open a browser.
+            const QString scheme = url.scheme().toLower();
+            if (scheme == QStringLiteral("http")
+                || scheme == QStringLiteral("https")) {
+                event->accept();
+                return;
+            }
 
-    if (!changed)
-        return;
+            // In-document anchor (e.g. `[top](#section)`) — not
+            // supported yet.  Reject cleanly.
+            if (url.path().isEmpty() && !url.fragment().isEmpty()) {
+                event->accept();
+                return;
+            }
 
-    // A theme switch re-applies block backgrounds to every fenced code
-    // block in the loaded document.  Wrapping the styling pass in the
-    // same layout guard used by loadFile() collapses what would
-    // otherwise be one layout per styled block into a single layout at
-    // the end.  For documents with many code blocks the difference is
-    // measurable; for documents with none, the guard costs nothing.
-    ScopedLayoutDisable layoutGuard(document());
-    applyCodeBlockStyles();
+            // Resolve the target to an absolute path.
+            QString targetPath;
+            if (url.isLocalFile()) {
+                targetPath = url.toLocalFile();
+            } else if (scheme.isEmpty()) {
+                const QDir currentDir =
+                    QFileInfo(m_currentFilePath).absoluteDir();
+                targetPath = currentDir.absoluteFilePath(url.path());
+            } else {
+                event->accept();
+                return;
+            }
+
+            // Rule 1 guard: reject anything outside the root.  Canonical
+            // comparison handles symlinks and Windows case normalisation.
+            if (m_rootFolder.isEmpty()) {
+                event->accept();
+                return;
+            }
+
+            const QFileInfo targetInfo(targetPath);
+            if (!targetInfo.isFile()) {
+                event->accept();
+                return;
+            }
+
+            const QString targetCanonical = targetInfo.canonicalFilePath();
+            const QString rootCanonical =
+                QFileInfo(m_rootFolder).canonicalFilePath();
+            if (targetCanonical.isEmpty() || rootCanonical.isEmpty()) {
+                event->accept();
+                return;
+            }
+
+            // Trailing separator so "/root/foo" matches but
+            // "/rootbar/foo" does not.
+            const QString rootPrefix = rootCanonical + u'/';
+            if (!targetCanonical.startsWith(rootPrefix)) {
+                event->accept();
+                return;
+            }
+
+            emit linkToLocalFileRequested(targetCanonical);
+            event->accept();
+            return;
+        }
+    }
+
+    // Not a link click — let the base class handle selection, etc.
+    QTextEdit::mouseReleaseEvent(event);
 }
 
-void MarkdownView::applyCodeBlockStyles()
+void MarkdownView::applyDocumentStyles()
 {
     auto *doc = document();
     if (!doc)
         return;
 
-    const QColor bg = extractColor(m_documentCss,
-                                   QStringLiteral("background(?:-color)?"));
-    const QColor fg = extractColor(m_documentCss,
-                                   QStringLiteral("color"));
-
-    if (!bg.isValid() && !fg.isValid())
-        return;
+    // Code-block background comes from the theme’s code-*.css file.
+    // MainWindow reads it via StyleLoader::codeBlockBackground() and
+    // hands it in through setTheme().  An invalid QColor means “no
+    // code-block styling” — the expected result for System, where the
+    // absence of a code-system.css file leaves Qt’s importer defaults
+    // in place.
+    const bool styleCodeBlocks = m_codeBg.isValid();
 
     if (doc->characterCount() <= 1)
         return;
 
-    QList<int> fencedPositions;
-    for (QTextBlock b = doc->begin(); b.isValid(); b = b.next()) {
-        if (b.blockFormat().nonBreakableLines())
-            fencedPositions.append(b.position());
-    }
-
-    if (fencedPositions.isEmpty())
-        return;
+    // Snapshot the base font metrics once — used both for heading
+    // detection (font-size ratio) and for computing margins in
+    // line-height units so they stay visually proportional at any zoom.
+    const double basePt = font().pointSizeF() > 0.0
+                              ? font().pointSizeF()
+                              : static_cast<double>(kDefaultZoomPt);
+    const double lineHeight = QFontMetricsF(font()).height();
 
     QTextCursor batch(doc);
     batch.beginEditBlock();
 
-    for (int pos : fencedPositions) {
-        QTextBlock b = doc->findBlock(pos);
-        if (!b.isValid())
-            continue;
+    QTextBlock block = doc->begin();
+    while (block.isValid()) {
+        const bool isCodeBlock = styleCodeBlocks
+                                 && block.blockFormat().nonBreakableLines();
 
-        if (bg.isValid()) {
-            QTextBlockFormat bf = b.blockFormat();
-            bf.setBackground(bg);
-            QTextCursor c(b);
+        if (isCodeBlock) {
+            // nonBreakableLines() is set by the markdown importer on
+            // fenced blocks.  blockFormat().setBackground() paints the
+            // whole row, so the tinted area is visible during fast
+            // scrolling.  No char format is applied — that would
+            // materialize the inherited font size and freeze the block
+            // against Ctrl+wheel zoom.
+            QTextBlockFormat bf = block.blockFormat();
+            bf.setBackground(m_codeBg);
+            QTextCursor c(block);
             c.setBlockFormat(bf);
+        } else if (block.blockNumber() != 0) {
+            // Heading margins for h1 / h2 / h3 only.  Block-format
+            // margin, not char format — font zoom continues to work.
+            // Skipping block 0 avoids a large gap above the title when
+            // the document opens with a heading.
+            const int level = detectHeadingLevel(block, basePt);
+            if (level >= 1 && level <= 3) {
+                double factor = 0.0;
+                switch (level) {
+                case 1: factor = 3.0; break;
+                case 2: factor = 2.2; break;
+                case 3: factor = 1.5; break;
+                }
+                QTextBlockFormat bf = block.blockFormat();
+                bf.setTopMargin(lineHeight * factor);
+                QTextCursor c(block);
+                c.setBlockFormat(bf);
+            }
         }
 
-        if (fg.isValid() && b.length() > 1) {
-            QTextCursor c(doc);
-            c.setPosition(b.position());
-            c.setPosition(b.position() + b.length() - 1,
-                          QTextCursor::KeepAnchor);
-            QTextCharFormat cf;
-            cf.setForeground(fg);
-            c.mergeCharFormat(cf);
-        }
+        block = block.next();
     }
 
     batch.endEditBlock();
@@ -272,8 +447,7 @@ bool MarkdownView::loadFile(const QString &filePath)
     // The markdown importer blocks the UI thread for as long as it takes
     // to parse the document.  The wait cursor does not shorten that
     // time, but it tells the user that the click was received and the
-    // app is working — which is what makes the difference between
-    // "responsive but slow" and "hung".
+    // app is working.
     struct WaitCursorScope
     {
         WaitCursorScope()  { QApplication::setOverrideCursor(Qt::WaitCursor); }
@@ -306,11 +480,19 @@ bool MarkdownView::loadFile(const QString &filePath)
         offset = 3;
     }
 
-    const QString markdown = QString::fromUtf8(
+    QString markdown = QString::fromUtf8(
         raw.data() + offset,
         static_cast<qsizetype>(raw.size() - offset));
 
-    // -- 2. Resolve relative images -------------------------------------
+    // -- 2. Convert web links to plain text -----------------------------
+    //
+    // Hyperlink rule 2.  Must run before the image resolver so that a
+    // `[text](https://url)` link is transformed even when the same
+    // document also contains image references — the two regexes are
+    // independent, but converting first keeps the pipeline readable.
+    markdown = convertWebLinksToPlainText(markdown);
+
+    // -- 3. Resolve relative images -------------------------------------
     auto *doc = qobject_cast<MarkdownDocument *>(document());
     if (!doc)
         return false;
@@ -343,23 +525,48 @@ bool MarkdownView::loadFile(const QString &filePath)
     for (const ResolvedImage &entry : resolved.images)
         doc->setImage(entry.url, entry.image);
 
-    // -- 3. Render and style under a single layout pass -----------------
+    // -- 4. Render + post-process under one layout pass -----------------
     //
-    // Both setMarkdown() (which builds the document) and
-    // applyCodeBlockStyles() (which mutates block formats) trigger
-    // QTextDocument layout work on every edit.  For a 500-row markdown
-    // table that compounds to minutes.  The ScopedLayoutDisable guard
-    // suppresses layout for both operations and lets it run once, at
-    // scope exit.  This is the single biggest factor in load performance
-    // for table-heavy documents.
+    // setMarkdown() and applyDocumentStyles() both mutate the document.
+    // Wrapping them in one ScopedLayoutDisable guard avoids a layout
+    // pass per edit — the single biggest factor in load performance for
+    // table-heavy documents.
+        m_currentFilePath = filePath;
+
+    // -- 3b. Per-file document CSS --------------------------------------
+    //
+    // Load <root>/css/<basename>.css if it exists, hand its contents to
+    // QTextDocument::setDefaultStyleSheet().  setMarkdown does not
+    // consult this stylesheet for its own element rendering, but the
+    // markdown importer delegates HTML blocks to setHtml(), which does.
+    // Document authors who want styled HTML in their markdown place
+    // their CSS at that location.
+    //
+    // The stylesheet is always set — to the file content, or to an empty
+    // string when the file is absent — so a previous file’s CSS cannot
+    // leak into the next.
+    {
+        QString perFileCss;
+        if (!m_rootFolder.isEmpty()) {
+            const QFileInfo mdInfo(filePath);
+            const QString cssPath = m_rootFolder
+                                  + QStringLiteral("/css/")
+                                  + mdInfo.completeBaseName()
+                                  + QStringLiteral(".css");
+            QFile cssFile(cssPath);
+            if (cssFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                perFileCss = QString::fromUtf8(cssFile.readAll());
+                cssFile.close();
+            }
+        }
+        document()->setDefaultStyleSheet(perFileCss);
+    }
+
     {
         ScopedLayoutDisable layoutGuard(doc);
 
         setMarkdown(resolved.text);
-
-        // Must run after setMarkdown(): the markdown importer rewrites
-        // the document, so formats applied beforehand would be lost.
-        applyCodeBlockStyles();
+        applyDocumentStyles();
     }
 
     return true;
