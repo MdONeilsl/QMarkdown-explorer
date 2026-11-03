@@ -28,7 +28,7 @@ cmake_minimum_required(VERSION 3.21)
 # Change HOMEPAGE_URL to your own repository — it is the top entry of
 # the GitHub dropdown at runtime (see RepoList::applicationRepoUrl).
 project(QMarkdown-explorer
-    VERSION      1.0.4
+    VERSION      1.1.13
     DESCRIPTION  "A desktop Markdown explorer built with Qt 6 Widgets"
     HOMEPAGE_URL "https://github.com/MdONeilsl/QMarkdown-explorer"
     LANGUAGES    CXX)

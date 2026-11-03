@@ -6,10 +6,11 @@ A desktop Markdown browser for large local note collections, built with C++20 an
 
 Point it at a folder; browse and read every `.md` file inside it without leaving the app.
 
-- Tree view filtered to Markdown files — empty folders are hidden
+- Tree view filtered to Markdown files, empty folders are hidden
 - Search across file names **and** file contents, debounced
 - Selecting a folder loads its `README.md`, if it has one
-- Three built-in themes (`default`, `dark`, `light`), hot-swappable
+- `.ignore` file support, works like `.gitignore`, accepts regular expressions
+- Three built-in themes (`System`, `Dark`, `Light`), hot-swappable
 - 48 UI languages
 - Repository shortcuts in the status bar, persisted to `repos.txt` beside the executable
 
@@ -38,6 +39,15 @@ The executable lands in `build/` (or `build/Release/` on MSVC). Styles, translat
 ```
 
 Full option list: `./QMarkdown-explorer --help`.
+
+## Shortcuts
+
+| Key | Action |
+|---|---|
+| `Ctrl+O` | Open folder |
+| `Alt+Left` | Back |
+| `Alt+Right` | Forward |
+| `Ctrl+Wheel` | Zoom document font in/out |
 
 ## Status
 
