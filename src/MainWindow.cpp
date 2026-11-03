@@ -38,6 +38,7 @@
 #include <QTreeView>
 #include <QUrl>
 #include <QWidget>
+#include <QScrollBar>
 
 #include <cstddef>
 #include <filesystem>
@@ -375,7 +376,14 @@ void MainWindow::wireModelAndView()
             // the suffix and refuses anything that is not .md /
             // .markdown, which is the correct policy for a
             // click-navigated link.
-            openMarkdownFile(absolutePath);
+            //
+            // SelectNoScroll: the click came from the viewer, not the
+            // tree, so update the tree’s selection to reflect the new
+            // current file without moving the tree panel’s viewport
+            // underneath the user.
+            openMarkdownFile(absolutePath,
+                             /*recordInHistory=*/true,
+                             TreeReveal::SelectNoScroll);
         });
 }
 
@@ -515,7 +523,9 @@ void MainWindow::handleTreeClicked(const QModelIndex &index)
     openMarkdownFile(path);
 }
 
-bool MainWindow::openMarkdownFile(const QString &filePath, bool recordInHistory)
+bool MainWindow::openMarkdownFile(const QString &filePath,
+                                  bool recordInHistory,
+                                  TreeReveal treeReveal)
 {
     if (filePath.isEmpty())
         return false;
@@ -541,6 +551,11 @@ bool MainWindow::openMarkdownFile(const QString &filePath, bool recordInHistory)
     m_currentFile = filePath;
     if (recordInHistory)
         recordHistory(filePath);
+
+    if (treeReveal != TreeReveal::None) {
+        revealFileInTree(filePath, treeReveal == TreeReveal::SelectAndScroll);
+    }
+
     statusBar()->showMessage(tr("Opened: %1").arg(fi.fileName()), 3000);
     // loadFile() re-applies the search term automatically; no explicit
     // searchInDocument call is needed here.
@@ -820,7 +835,9 @@ void MainWindow::goBack()
 
     const int target = m_historyIndex - 1;
     const QString filePath = m_history.at(target);
-    if (!openMarkdownFile(filePath, /*recordInHistory=*/false))
+    if (!openMarkdownFile(filePath,
+                          /*recordInHistory=*/false,
+                          TreeReveal::SelectAndScroll))
         return;
 
     m_historyIndex = target;
@@ -834,11 +851,61 @@ void MainWindow::goForward()
 
     const int target = m_historyIndex + 1;
     const QString filePath = m_history.at(target);
-    if (!openMarkdownFile(filePath, /*recordInHistory=*/false))
+    if (!openMarkdownFile(filePath,
+                          /*recordInHistory=*/false,
+                          TreeReveal::SelectAndScroll))
         return;
 
     m_historyIndex = target;
     updateHistoryActions();
+}
+
+void MainWindow::revealFileInTree(const QString &filePath, bool scrollToItem)
+{
+    if (!m_fileModel || !m_filterProxy || !m_treeView)
+        return;
+
+    const QModelIndex srcIdx = m_fileModel->index(filePath);
+    if (!srcIdx.isValid())
+        return;
+
+    const QModelIndex proxyIdx = m_filterProxy->mapFromSource(srcIdx);
+    if (!proxyIdx.isValid())
+        return;
+
+    // The view’s root index is the implicit top level and is always
+    // shown expanded, so it is skipped.  Every other ancestor is
+    // expanded so the target row becomes reachable.
+    const QModelIndex rootProxy = m_treeView->rootIndex();
+    QList<QModelIndex> toExpand;
+    QModelIndex parent = proxyIdx.parent();
+    while (parent.isValid() && parent != rootProxy) {
+        toExpand.prepend(parent);
+        parent = parent.parent();
+    }
+    for (const QModelIndex &idx : toExpand)
+        m_treeView->expand(idx);
+
+    if (scrollToItem) {
+        m_treeView->setCurrentIndex(proxyIdx);
+        m_treeView->scrollTo(proxyIdx, QAbstractItemView::EnsureVisible);
+        return;
+    }
+
+    // No-scroll variant: save the scrollbar positions so the expansion
+    // — which shifts row positions — does not move the visible rows.
+    // The selection still changes; only the panel’s visible range stays
+    // fixed.  Without this, a link click that opens a deeply nested
+    // file would scroll the tree as a side effect of opening folders.
+    QScrollBar *vbar = m_treeView->verticalScrollBar();
+    QScrollBar *hbar = m_treeView->horizontalScrollBar();
+    const int savedV = vbar->value();
+    const int savedH = hbar->value();
+
+    m_treeView->setCurrentIndex(proxyIdx);
+
+    vbar->setValue(savedV);
+    hbar->setValue(savedH);
 }
 
 // -----------------------------------------------------------------------------

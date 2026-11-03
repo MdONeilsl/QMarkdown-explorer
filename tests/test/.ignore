@@ -1,0 +1,9 @@
+# Ignore rules — QRegularExpression per line, gitignore-like intent.
+# Basename patterns hide the file anywhere under the root.
+
+^draft-.+\.md$
+\.log$
+
+# Path patterns — anchored, relative to the root.
+^build/
+^scratch/notes\.md$

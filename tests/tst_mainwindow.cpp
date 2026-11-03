@@ -13,6 +13,7 @@
 #include <QTreeView>
 
 #include "MainWindow.h"
+#include "MarkdownFilterProxyModel.h"
 
 #include <cstddef>
 #include <filesystem>
@@ -133,6 +134,9 @@ private slots:
     void navigationHistoryRecordsBackAndForward();
     void sameFileClickDoesNotDuplicateHistory();
     void rootChangeClearsHistory();
+
+    void linkClickRevealsFileInTree();
+    void backSelectsFileInTree();
 
 private:
     // Creates a valid folder inside the fixture’s temp directory and
@@ -467,6 +471,111 @@ void TestMainWindow::rootChangeClearsHistory()
     QCOMPARE(win.historyIndex(), -1);
     QVERIFY(!win.findChild<QAction *>(QStringLiteral("backAction"))->isEnabled());
     QVERIFY(!win.findChild<QAction *>(QStringLiteral("forwardAction"))->isEnabled());
+}
+
+void TestMainWindow::linkClickRevealsFileInTree()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString aPath     = root.filePath(QStringLiteral("a.md"));
+    const QString nestedDir = root.filePath(QStringLiteral("deep"));
+    QVERIFY(QDir().mkpath(nestedDir));
+    const QString bPath = nestedDir + QStringLiteral("/b.md");
+    {
+        QFile f(aPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("# A\n");
+    }
+    {
+        QFile f(bPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("# B\n");
+    }
+
+    MainWindow win;
+    win.setRootFolder(root.path());
+    QVERIFY(win.openMarkdownFile(aPath));
+
+    // Simulate the linkToLocalFileRequested handler: open b.md with
+    // SelectNoScroll.  In production this is triggered by a click on
+    // a cross-file anchor inside a.md.
+    QVERIFY(win.openMarkdownFile(bPath,
+                                 /*recordInHistory=*/true,
+                                 MainWindow::TreeReveal::SelectNoScroll));
+
+    QCOMPARE(win.currentFile(), bPath);
+
+    QTreeView *tree = win.findChild<QTreeView *>(QStringLiteral("fileTree"));
+    QVERIFY(tree);
+    const QModelIndex currentIdx = tree->currentIndex();
+    QVERIFY2(currentIdx.isValid(),
+             "Tree currentIndex is invalid after a link-click reveal");
+
+    // Resolve the current row back through the proxy to the real path.
+    MarkdownFilterProxyModel *proxy =
+        win.findChild<MarkdownFilterProxyModel *>();
+    QVERIFY(proxy);
+    QFileSystemModel *model = win.findChild<QFileSystemModel *>();
+    QVERIFY(model);
+    QCOMPARE(proxy->sourceModel(), model);
+
+    const QModelIndex srcCurrent = proxy->mapToSource(currentIdx);
+    QVERIFY(srcCurrent.isValid());
+    QCOMPARE(QFileInfo(model->filePath(srcCurrent)).canonicalFilePath(),
+             QFileInfo(bPath).canonicalFilePath());
+
+    // The “deep” folder must be expanded, otherwise b.md could not be
+    // reachable (parent rows would be collapsed).
+    const QModelIndex deepSrc = model->index(nestedDir);
+    QVERIFY(deepSrc.isValid());
+    const QModelIndex deepProxy = proxy->mapFromSource(deepSrc);
+    QVERIFY2(deepProxy.isValid(),
+             "Intermediate folder is filtered out — reveal cannot expand it");
+    QVERIFY2(tree->isExpanded(deepProxy),
+             "Intermediate folder was not expanded by revealFileInTree");
+}
+
+void TestMainWindow::backSelectsFileInTree()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString aPath = root.filePath(QStringLiteral("a.md"));
+    const QString bPath = root.filePath(QStringLiteral("b.md"));
+    {
+        QFile f(aPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("# A\n");
+    }
+    {
+        QFile f(bPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("# B\n");
+    }
+
+    MainWindow win;
+    win.setRootFolder(root.path());
+    QVERIFY(win.openMarkdownFile(aPath));
+    QVERIFY(win.openMarkdownFile(bPath));
+
+    // Back must select a.md in the tree, not just change the viewer.
+    QVERIFY(QMetaObject::invokeMethod(&win, "goBack"));
+    QCOMPARE(win.currentFile(), aPath);
+
+    QTreeView *tree = win.findChild<QTreeView *>(QStringLiteral("fileTree"));
+    QVERIFY(tree);
+    const QModelIndex currentIdx = tree->currentIndex();
+    QVERIFY(currentIdx.isValid());
+
+    MarkdownFilterProxyModel *proxy =
+        win.findChild<MarkdownFilterProxyModel *>();
+    QVERIFY(proxy);
+    QFileSystemModel *model = win.findChild<QFileSystemModel *>();
+    QVERIFY(model);
+
+    const QModelIndex srcCurrent = proxy->mapToSource(currentIdx);
+    QVERIFY(srcCurrent.isValid());
+    QCOMPARE(QFileInfo(model->filePath(srcCurrent)).canonicalFilePath(),
+             QFileInfo(aPath).canonicalFilePath());
 }
 
 QTEST_MAIN(TestMainWindow)

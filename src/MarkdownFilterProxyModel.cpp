@@ -5,6 +5,9 @@
 #include <QFileInfo>
 #include <QFileSystemModel>
 #include <QString>
+#include <QDebug>
+#include <QRegularExpression>
+#include <QStringList>
 
 #include <algorithm>
 #include <cstddef>
@@ -100,6 +103,29 @@ bool isHiddenName(const std::filesystem::path &p)
     return !name.empty() && name[0] == u8'.';
 }
 
+/**
+ * @brief Returns `entry`’s path relative to `root`, forward-slash
+ *        separated, for matching against `.ignore` patterns.
+ *
+ * Returns an empty string when the two paths share no ancestor, which
+ * the recursive walk never produces for an entry, but the helper is
+ * defensive — a bad result from `std::filesystem::relative` must not
+ * produce spurious path matches.
+ */
+QString relativeForwardSlashed(const std::filesystem::path &root,
+                               const std::filesystem::path &entry)
+{
+    std::error_code ec;
+    const std::filesystem::path rel =
+        std::filesystem::relative(entry, root, ec);
+    if (ec || rel.empty())
+        return {};
+    const std::u8string u8 = rel.generic_u8string();
+    return QString::fromUtf8(
+        reinterpret_cast<const char *>(u8.data()),
+        static_cast<qsizetype>(u8.size()));
+}
+
 } // namespace
 
 MarkdownFilterProxyModel::MarkdownFilterProxyModel(QObject *parent)
@@ -114,6 +140,7 @@ void MarkdownFilterProxyModel::setSourceRootPath(const QString &path)
     if (m_rootPath == normalised)
         return;
     m_rootPath = normalised;
+    loadIgnoreRules();
     rebuildCache();
     invalidateFilter();
 }
@@ -129,6 +156,7 @@ void MarkdownFilterProxyModel::setSearchText(const QString &text)
 
 void MarkdownFilterProxyModel::refresh()
 {
+    loadIgnoreRules();
     rebuildCache();
     invalidateFilter();
 }
@@ -148,6 +176,7 @@ void MarkdownFilterProxyModel::rebuildCache()
         return;
 
     const bool hasSearch = !m_searchText.isEmpty();
+    const bool hasIgnore = !m_ignoreRules.isEmpty();
 
     // skip_permission_denied keeps the walk alive when a subfolder is
     // unreadable: we miss its files rather than aborting the whole scan
@@ -179,6 +208,23 @@ void MarkdownFilterProxyModel::rebuildCache()
                 it.disable_recursion_pending();
             ec.clear();
             continue;
+        }
+
+        // .ignore rules.  Checked before the directory branch below so
+        // a matching directory can prune its own subtree without ever
+        // having its contents walked.  The same disable_recursion_pending
+        // trick the hidden-file rule uses keeps the cost bounded by the
+        // ignored directory’s top level.
+        if (hasIgnore) {
+            const bool isDir = entry.is_directory(ec) && !ec;
+            ec.clear();
+            const QString relPath = relativeForwardSlashed(root, p);
+            const QString base    = toQString(p.filename());
+            if (matchesIgnoreRule(relPath, base, isDir)) {
+                if (isDir)
+                    it.disable_recursion_pending();
+                continue;
+            }
         }
 
         if (entry.is_directory(ec) && !ec) {
@@ -223,6 +269,82 @@ void MarkdownFilterProxyModel::rebuildCache()
         }
     }
 }
+
+void MarkdownFilterProxyModel::loadIgnoreRules()
+{
+    m_ignoreRules.clear();
+    if (m_rootPath.isEmpty())
+        return;
+
+    const std::filesystem::path ignorePath =
+        toFsPath(m_rootPath + QStringLiteral("/.ignore"));
+    std::ifstream in(ignorePath, std::ios::binary);
+    if (!in.is_open())
+        return;
+
+    const std::string raw((std::istreambuf_iterator<char>(in)),
+                          std::istreambuf_iterator<char>());
+    in.close();
+
+    // Same BOM strip as fileContainsText(), so a UTF-8 BOM at the head
+    // of the .ignore file does not corrupt the first pattern.
+    std::size_t offset = 0;
+    if (raw.size() >= 3
+        && static_cast<unsigned char>(raw[0]) == 0xEF
+        && static_cast<unsigned char>(raw[1]) == 0xBB
+        && static_cast<unsigned char>(raw[2]) == 0xBF) {
+        offset = 3;
+    }
+
+    const QString content = QString::fromUtf8(
+        raw.data() + offset,
+        static_cast<qsizetype>(raw.size() - offset));
+
+    const QStringList lines = content.split(u'\n');
+    for (const QString &rawLine : lines) {
+        const QString line = rawLine.trimmed();
+        if (line.isEmpty() || line.startsWith(u'#'))
+            continue;
+
+        QRegularExpression re(line);
+        if (!re.isValid()) {
+            qWarning("MarkdownFilterProxyModel: invalid .ignore pattern "
+                     "'%s': %s",
+                     qPrintable(line),
+                     qPrintable(re.errorString()));
+            continue;
+        }
+        m_ignoreRules.append(re);
+    }
+}
+
+bool MarkdownFilterProxyModel::matchesIgnoreRule(const QString &relPath,
+                                                 const QString &basename,
+                                                 bool isDir) const
+{
+    if (m_ignoreRules.isEmpty())
+        return false;
+
+    for (const QRegularExpression &re : m_ignoreRules) {
+        // Relative path from the root — lets patterns such as
+        // `^build/artifacts` target one subtree specifically.
+        if (!relPath.isEmpty() && re.match(relPath).hasMatch())
+            return true;
+
+        // Trailing slash variant, only for directories — mirrors the
+        // `^dir/` convention from gitignore.
+        if (isDir && !relPath.isEmpty()
+            && re.match(relPath + u'/').hasMatch())
+            return true;
+
+        // Basename — the form most `.ignore` writers will use
+        // (`^temp$`, `\.log$`, `^draft-.+\.md$`).
+        if (!basename.isEmpty() && re.match(basename).hasMatch())
+            return true;
+    }
+    return false;
+}
+
 
 QVariant MarkdownFilterProxyModel::data(const QModelIndex &index,
                                         int role) const

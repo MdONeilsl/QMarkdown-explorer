@@ -64,6 +64,36 @@ public:
     ~MainWindow() override;
 
     /**
+     * @brief Controls how the file tree reacts when `openMarkdownFile()`
+     *        succeeds.
+     *
+     * The two callers that open a file by clicking inside another
+     * document or replaying navigation history need to bring the tree
+     * selection in line with what is now displayed — the tree was not
+     * where the click came from, so the selection would otherwise point
+     * at a row that no longer corresponds to the visible document.
+     *
+     *   * `None` — do nothing.  Used by user-initiated tree clicks
+     *     (the tree already has the right row selected) and by README
+     *     auto-loads (the README may not even be visible in the tree,
+     *     because of the README-exemption rule in the proxy).
+     *   * `SelectNoScroll` — select the row and expand every
+     *     intermediate folder, without moving the viewport.  Used by
+     *     cross-document link clicks: the tree should reflect the
+     *     navigation, but the user’s current scroll position in the
+     *     tree panel is preserved.
+     *   * `SelectAndScroll` — select, expand, and scroll the row into
+     *     view.  Used by toolbar back/forward: the history replay is
+     *     explicitly a jump, so bringing the target row into view is
+     *     the intended behaviour.
+     */
+    enum class TreeReveal {
+        None,
+        SelectNoScroll,
+        SelectAndScroll,
+    };
+
+    /**
      * @brief Points the model, the filter proxy, and the tree at
      *        `folderPath`, then loads the root’s README if present.
      *
@@ -89,6 +119,9 @@ public:
      *                         load is appended to the navigation history.
      *                         Back/forward replay passes false so the
      *                         stack is not re-recorded.
+     * @param treeReveal       Controls whether and how the file’s row
+     *                         is selected and revealed in the tree.
+     *                         See `TreeReveal`.
      *
      * @return `true` if the file was loaded and displayed.
      *
@@ -96,7 +129,9 @@ public:
      *       that pass arbitrary paths (such as `loadFolderReadme()`)
      *       rely on this to silently ignore non-Markdown files.
      */
-    bool openMarkdownFile(const QString &filePath, bool recordInHistory = true);
+    bool openMarkdownFile(const QString &filePath,
+                          bool recordInHistory = true,
+                          TreeReveal treeReveal = TreeReveal::None);
 
     // Introspection helpers for tests; stable, side-effect-free.
     int     historySize()  const { return m_history.size(); }
@@ -207,6 +242,23 @@ private:
     QString lastFolder() const;
     void saveLastStyle(const QString &styleName) const;
     QString lastStyle() const;
+
+    /**
+     * @brief Selects `filePath`’s row in the tree, expanding every
+     *        intermediate folder so the row is reachable.
+     *
+     * Silent no-op when the file is not reachable through the proxy
+     * (hidden by the README exemption, excluded by an active search,
+     * or matched by a `.ignore` rule) — there is no row to select.
+     *
+     * @param scrollToItem  When true, scroll the row into view
+     *                      (QAbstractItemView::EnsureVisible).  When
+     *                      false, save and restore the view’s prior
+     *                      scroll position around the call, so the
+     *                      selection changes without the panel jumping
+     *                      as folders expand.
+     */
+    void revealFileInTree(const QString &filePath, bool scrollToItem);
 
     // Qt-parented child widgets and models.  All owned by the
     // QMainWindow or by their own parent objects; none require manual
