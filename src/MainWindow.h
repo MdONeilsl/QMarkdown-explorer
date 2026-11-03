@@ -7,6 +7,7 @@
 
 class QComboBox;
 class QFileSystemModel;
+class QLabel;
 class QLineEdit;
 class QMenu;
 class QModelIndex;
@@ -23,41 +24,26 @@ class RepoList;
  *
  * Layout:
  *
- *     ┌───────────────────────────────────────────────────────┐
- *     │ toolbar:  [Open Folder…] [search…]  ────  [Style: ▾]  │
- *     ├────────────────────┬──────────────────────────────────┤
- *     │  QTreeView         │  MarkdownView                    │
- *     │  (filtered view)   │  (read-only QTextEdit)           │
- *     ├────────────────────┴──────────────────────────────────┤
- *     │ status:  (message…)                    [Qt] [GitHub]  │
- *     └───────────────────────────────────────────────────────┘
+ *     ┌─────────────────────────────────────────────────────────────┐
+ *     │ toolbar: [Open Folder…] [search…] [N / M] [↑] [↓]  [Style:] │
+ *     ├────────────────────┬────────────────────────────────────────┤
+ *     │  QTreeView         │  MarkdownView                          │
+ *     │  (filtered view)   │  (read-only QTextEdit)                 │
+ *     ├────────────────────┴────────────────────────────────────────┤
+ *     │ status:  (message…)                    [Qt] [GitHub]        │
+ *     └─────────────────────────────────────────────────────────────┘
  *
- * Behaviour summary:
+ * Search box:
+ *   * Filters the tree (name or content, debounced at 300 ms).
+ *   * Also drives in-document search in the viewer as-you-type
+ *     (no debounce; document search is fast).
+ *   * The counter label shows "N / M" for the viewer’s current match
+ *     position and total.  Empty when the search is under 3 characters
+ *     or has no matches.
+ *   * The up/down arrows navigate viewer matches (wrap at either end).
  *
- *   * **Tree.**  Shows `.md` / `.markdown` files and the folders that
- *     contain them, filtered by name and content.  The rules themselves
- *     live in `MarkdownFilterProxyModel`; this class only drives it.
- *
- *   * **Search.**  The single-line search box filters on file name and
- *     file content (case-insensitive).  Keystrokes are debounced (300 ms)
- *     so the on-disk scan runs once per pause rather than once per
- *     character.  Clearing the box bypasses the debounce and applies
- *     immediately.
- *
- *   * **README loading.**  Selecting a folder loads that folder’s
- *     `README.md` if it has one.  The same rule applies to the root at
- *     startup and when the root is changed.  `README.md` files are
- *     hidden from the tree everywhere except at the root.
- *
- *   * **Status bar.**  Two right-aligned buttons.  The Qt button opens
- *     the standard About Qt dialog (LGPL v3 requires it to be reachable).
- *     The GitHub button opens an upward menu with the application’s own
- *     repository, the user’s saved repositories, and an entry to add a
- *     new one.
- *
- *   * **Persistence.**  The last folder and the last style are restored
- *     through `QSettings`.  The repository list is persisted in
- *     `<exe-dir>/repos.txt` (see `RepoList`).
+ * README loading, theme selection, repo menu, and persistence behave as
+ * before.
  */
 class MainWindow : public QMainWindow
 {
@@ -100,6 +86,7 @@ private slots:
      * their files reappear the moment they clear the search.
      */
     void handleSearchTextChanged(const QString &text);
+    void handleSearchStateChanged(int current, int total);
 
     /// Qt status-bar button: opens the standard About Qt dialog.
     void showQtAbout();
@@ -192,6 +179,9 @@ private:
     QToolButton              *m_qtButton       = nullptr;
     QToolButton              *m_githubButton   = nullptr;
     QMenu                    *m_repoMenu       = nullptr;
+    QLabel                   *m_searchCounter = nullptr;
+    QToolButton              *m_searchPrev    = nullptr;
+    QToolButton              *m_searchNext    = nullptr;
 
     /// Owned list of user repositories.  Not a `QObject`, so it cannot
     /// rely on Qt parent-child ownership.

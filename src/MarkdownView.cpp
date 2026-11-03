@@ -9,6 +9,9 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFont>
+#include <QFontMetrics>
+#include <QList>
+#include <QMouseEvent>
 #include <QRegularExpression>
 #include <QRegularExpressionMatch>
 #include <QSettings>
@@ -19,11 +22,9 @@
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextEdit>
+#include <QTextFragment>
 #include <QUrl>
 #include <QWheelEvent>
-#include <QMouseEvent>
-#include <QFontMetrics>
-#include <QTextFragment>
 
 #include <cstddef>
 #include <filesystem>
@@ -91,28 +92,40 @@ constexpr int kDefaultZoomPt = 11;
 constexpr const char *kSettingsKey = "FontPointSize";
 
 /**
+ * @brief Returns the markdown heading level of a block, or 0 if it is
+ *        not a heading.
+ */
+int detectHeadingLevel(const QTextBlock &block, double basePt)
+{
+    const int explicitLevel = block.blockFormat().headingLevel();
+    if (explicitLevel >= 1 && explicitLevel <= 6)
+        return explicitLevel;
+
+    if (basePt <= 0.0)
+        return 0;
+
+    for (auto it = block.begin(); !it.atEnd(); ++it) {
+        const QTextFragment frag = it.fragment();
+        if (!frag.isValid() || frag.length() <= 0)
+            continue;
+        const double size = frag.charFormat().fontPointSize();
+        if (size <= 0.0)
+            continue;
+        const double ratio = size / basePt;
+        if (ratio >= 1.75) return 1;
+        if (ratio >= 1.35) return 2;
+        if (ratio >= 1.10) return 3;
+        return 0;
+    }
+    return 0;
+}
+
+/**
  * @brief Converts markdown links whose target is a web URL into plain
  *        text showing the full URL.
  *
  * Hyperlink rule 2: web links must not be clickable, and the full URL
- * must be visible so the user can copy/paste it without triggering a
- * browser.
- *
- * Transformation:
- *
- *     [click here](https://example.com)     →  click here (https://example.com)
- *     [https://example.com](https://example.com)  →  https://example.com
- *     [docs](<https://example.com> "title")  →  docs (https://example.com)
- *
- * Notes:
- *   * Only http:// and https:// are converted.  Other schemes
- *     (mailto:, ftp:, …) are left as anchors and are silently ignored
- *     by the click handler, which only accepts local file links.
- *   * Image syntax ![alt](url) is not touched — the leading `!` blocks
- *     the match.  ImageResolver handles those separately.
- *   * Reference-style links ([text][ref] + [ref]: url) are not
- *     transformed by this function because the URL lives on a separate
- *     line.  They remain anchors and are rejected by the click handler.
+ * must be visible so the user can copy/paste it.
  */
 QString convertWebLinksToPlainText(const QString &markdown)
 {
@@ -152,46 +165,13 @@ QString convertWebLinksToPlainText(const QString &markdown)
     return result;
 }
 
-/**
- * @brief Returns the markdown heading level of a block, or 0 if it is
- *        not a heading.
- *
- * Preferred signal: QTextBlockFormat::headingLevel(), populated by
- * QTextMarkdownImporter on Qt 6.4+.
- *
- * Fallback: font-size ratio to the base.  The importer renders headings
- * with absolute point sizes computed from the base font, so the ratio
- * distinguishes levels reliably even when headingLevel() is unavailable.
- * Thresholds match the importer’s scaling (h1 ~2em, h2 ~1.5em,
- * h3 ~1.17em), with tolerance for rounding.
- *
- * Returns 0 for non-headings and for h4–h6 (the project only wants
- * additional spacing above h1, h2, h3).
- */
-int detectHeadingLevel(const QTextBlock &block, double basePt)
-{
-    const int explicitLevel = block.blockFormat().headingLevel();
-    if (explicitLevel >= 1 && explicitLevel <= 6)
-        return explicitLevel;
-
-    if (basePt <= 0.0)
-        return 0;
-
-    for (auto it = block.begin(); !it.atEnd(); ++it) {
-        const QTextFragment frag = it.fragment();
-        if (!frag.isValid() || frag.length() <= 0)
-            continue;
-        const double size = frag.charFormat().fontPointSize();
-        if (size <= 0.0)
-            continue;
-        const double ratio = size / basePt;
-        if (ratio >= 1.75) return 1;
-        if (ratio >= 1.35) return 2;
-        if (ratio >= 1.10) return 3;
-        return 0;
-    }
-    return 0;
-}
+// Highlight colours.  Yellow for all matches, orange for the current
+// one — the same palette every browser uses for find-in-page.  Black
+// foreground is explicit so the highlights are readable on the dark
+// QSS theme (where the document default text is light grey).
+const QColor kAllMatchBg(0xFF, 0xF1, 0x76);   // material yellow 300
+const QColor kCurrentMatchBg(0xFF, 0xB7, 0x4D); // material orange 300
+const QColor kMatchFg(0x00, 0x00, 0x00);
 
 } // namespace
 
@@ -206,17 +186,14 @@ MarkdownView::MarkdownView(QWidget *parent)
     // Enable link activation.  setReadOnly(true) only allows text
     // selection; links need the explicit interaction flag.  QTextEdit
     // has no setOpenExternalLinks property — that is a QTextBrowser-only
-    // convenience — so anchors emit anchorClicked and we decide what to
-    // do with each URL ourselves.
+    // convenience — so anchors are handled via mouseReleaseEvent.
     setTextInteractionFlags(Qt::TextBrowserInteraction);
-
 
     auto *doc = new MarkdownDocument(this);
     setDocument(doc);
     doc->setDocumentMargin(16);
 
-    // Restore the saved font size.  See the QSettings comment in
-    // wheelEvent for the write side.
+    // Restore the saved font size.
     int savedPt = QSettings().value(QString::fromLatin1(kSettingsKey),
                                      kDefaultZoomPt).toInt();
     if (savedPt < kMinZoomPt)
@@ -237,7 +214,7 @@ void MarkdownView::setRootFolder(const QString &rootFolder)
 void MarkdownView::setTheme(const QString &themeName,
                             const QColor &codeBlockBackground)
 {
-    const bool nameChanged = (m_theme != themeName);
+    const bool nameChanged  = (m_theme != themeName);
     const bool colorChanged = (m_codeBg != codeBlockBackground);
 
     m_theme = themeName;
@@ -403,12 +380,9 @@ void MarkdownView::applyDocumentStyles()
                                  && block.blockFormat().nonBreakableLines();
 
         if (isCodeBlock) {
-            // nonBreakableLines() is set by the markdown importer on
-            // fenced blocks.  blockFormat().setBackground() paints the
-            // whole row, so the tinted area is visible during fast
-            // scrolling.  No char format is applied — that would
-            // materialize the inherited font size and freeze the block
-            // against Ctrl+wheel zoom.
+            // blockFormat().setBackground() paints the whole row.
+            // No char format is applied — that would materialize the
+            // inherited font size and freeze the block against zoom.
             QTextBlockFormat bf = block.blockFormat();
             bf.setBackground(m_codeBg);
             QTextCursor c(block);
@@ -438,6 +412,109 @@ void MarkdownView::applyDocumentStyles()
 
     batch.endEditBlock();
 }
+
+// -----------------------------------------------------------------------------
+//  In-document search
+// -----------------------------------------------------------------------------
+
+int MarkdownView::searchInDocument(const QString &needle)
+{
+    m_searchTerm = needle;
+    m_currentMatchIndex = 0;
+    rebuildSearchHighlights();
+    return m_matchCount;
+}
+
+void MarkdownView::clearSearchHighlights()
+{
+    m_searchTerm.clear();
+    m_matchCount = 0;
+    m_currentMatchIndex = 0;
+    setExtraSelections({});
+    emit searchStateChanged(0, 0);
+}
+
+bool MarkdownView::nextMatch()
+{
+    if (m_matchCount == 0)
+        return false;
+    m_currentMatchIndex = (m_currentMatchIndex + 1) % m_matchCount;
+    rebuildSearchHighlights();
+    return true;
+}
+
+bool MarkdownView::previousMatch()
+{
+    if (m_matchCount == 0)
+        return false;
+    m_currentMatchIndex =
+        (m_currentMatchIndex - 1 + m_matchCount) % m_matchCount;
+    rebuildSearchHighlights();
+    return true;
+}
+
+void MarkdownView::rebuildSearchHighlights()
+{
+    auto *doc = document();
+    if (!doc || m_searchTerm.length() < 3) {
+        m_matchCount = 0;
+        m_currentMatchIndex = 0;
+        setExtraSelections({});
+        emit searchStateChanged(0, 0);
+        return;
+    }
+
+    // Collect all matches with QTextDocument::find (case-insensitive
+    // by default; no FindCaseSensitively flag).  Each find() call
+    // starts after the previous match’s selection, so a single cursor
+    // walks the whole document.
+    QList<QTextEdit::ExtraSelection> selections;
+    QTextCursor cursor(doc);
+    while (true) {
+        cursor = doc->find(m_searchTerm, cursor);
+        if (cursor.isNull())
+            break;
+
+        QTextEdit::ExtraSelection sel;
+        sel.cursor = cursor;
+        sel.format.setBackground(
+            (selections.size() == m_currentMatchIndex)
+                ? kCurrentMatchBg
+                : kAllMatchBg);
+        sel.format.setForeground(kMatchFg);
+        selections.append(sel);
+    }
+
+    m_matchCount = selections.size();
+
+    if (m_matchCount == 0) {
+        m_currentMatchIndex = 0;
+        setExtraSelections({});
+        emit searchStateChanged(0, 0);
+        return;
+    }
+
+    if (m_currentMatchIndex >= m_matchCount)
+        m_currentMatchIndex = 0;
+
+    setExtraSelections(selections);
+
+    // Scroll the current match into view without creating a text
+    // selection.  Setting the cursor at the match start positions the
+    // caret for the next Tab out of the search box, and
+    // ensureCursorVisible() brings it into the viewport.
+    const QTextCursor &cur = selections[m_currentMatchIndex].cursor;
+    QTextCursor clean(doc);
+    clean.setPosition(cur.selectionStart());
+    setTextCursor(clean);
+    ensureCursorVisible();
+
+    emit searchStateChanged(m_currentMatchIndex + 1, m_matchCount);
+}
+
+// -----------------------------------------------------------------------------
+//  Load
+// -----------------------------------------------------------------------------
 
 bool MarkdownView::loadFile(const QString &filePath)
 {
@@ -562,11 +639,28 @@ bool MarkdownView::loadFile(const QString &filePath)
         document()->setDefaultStyleSheet(perFileCss);
     }
 
+    // -- 4. Render + post-process ---------------------------------------
     {
         ScopedLayoutDisable layoutGuard(doc);
-
         setMarkdown(resolved.text);
         applyDocumentStyles();
+    }
+
+    // -- 5. Re-apply search to the new content --------------------------
+    //
+    // setMarkdown replaces the document, which invalidates any previous
+    // extraSelections.  Rebuilding them against the new content keeps
+    // the counter and highlights consistent with what the user sees.
+    // The search term itself is not affected by loadFile.
+    if (m_searchTerm.length() >= 3) {
+        m_currentMatchIndex = 0;
+        rebuildSearchHighlights();
+    } else {
+        m_matchCount = 0;
+        m_currentMatchIndex = 0;
+        setExtraSelections({});
+        // Do not emit — no visible change from the user’s perspective
+        // (the counter was already empty).
     }
 
     return true;

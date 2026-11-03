@@ -208,6 +208,42 @@ void MainWindow::buildToolBar()
     m_searchEdit->setClearButtonEnabled(true);
     toolbar->addWidget(m_searchEdit);
 
+    // Counter label — shows “N / M” for the viewer’s current match.
+    // Fixed minimum width prevents the toolbar from jittering as the
+    // number grows from “0 / 9” to “10 / 99”.
+    m_searchCounter = new QLabel(toolbar);
+    m_searchCounter->setObjectName(QStringLiteral("searchCounter"));
+    m_searchCounter->setMinimumWidth(60);
+    m_searchCounter->setAlignment(Qt::AlignCenter);
+    toolbar->addWidget(m_searchCounter);
+
+    m_searchPrev = new QToolButton(toolbar);
+    m_searchPrev->setObjectName(QStringLiteral("searchPrev"));
+    m_searchPrev->setAutoRaise(true);
+    m_searchPrev->setIcon(style()->standardIcon(QStyle::SP_ArrowUp));
+    m_searchPrev->setToolTip(tr("Previous match"));
+    m_searchPrev->setEnabled(false);
+    toolbar->addWidget(m_searchPrev);
+
+    m_searchNext = new QToolButton(toolbar);
+    m_searchNext->setObjectName(QStringLiteral("searchNext"));
+    m_searchNext->setAutoRaise(true);
+    m_searchNext->setIcon(style()->standardIcon(QStyle::SP_ArrowDown));
+    m_searchNext->setToolTip(tr("Next match"));
+    m_searchNext->setEnabled(false);
+    toolbar->addWidget(m_searchNext);
+
+    connect(m_searchPrev, &QToolButton::clicked, this, [this]() {
+        if (m_markdownView)
+            m_markdownView->previousMatch();
+    });
+    connect(m_searchNext, &QToolButton::clicked, this, [this]() {
+        if (m_markdownView)
+            m_markdownView->nextMatch();
+    });
+    connect(m_markdownView, &MarkdownView::searchStateChanged,
+            this, &MainWindow::handleSearchStateChanged);
+
     m_searchDebounce = new QTimer(this);
     m_searchDebounce->setSingleShot(true);
     m_searchDebounce->setInterval(300);
@@ -469,6 +505,8 @@ void MainWindow::openMarkdownFile(const QString &filePath)
 
     m_currentFile = filePath;
     statusBar()->showMessage(tr("Opened: %1").arg(fi.fileName()), 3000);
+    // loadFile() re-applies the search term automatically; no explicit
+    // searchInDocument call is needed here.
 }
 
 void MainWindow::handleStyleChanged(int index)
@@ -497,18 +535,24 @@ void MainWindow::handleStyleChanged(int index)
 
 void MainWindow::handleSearchTextChanged(const QString &text)
 {
-    // Fast path: clearing the box (via the clear button or deleting the
-    // last character) applies immediately — no point making the user
-    // wait for the debounce to see their files reappear.
+    // Fast path: clearing the box applies the empty filter immediately.
     if (text.isEmpty()) {
         if (m_searchDebounce)
             m_searchDebounce->stop();
         applySearchText();
+        if (m_markdownView)
+            m_markdownView->searchInDocument(QString());
         return;
     }
 
     if (m_searchDebounce)
         m_searchDebounce->start();
+
+    // In-document search runs as-you-type (no debounce — the search
+    // itself is fast, and debouncing it would make navigation feel
+    // laggy).  searchInDocument handles the <3-char case by clearing.
+    if (m_markdownView)
+        m_markdownView->searchInDocument(text);
 }
 
 void MainWindow::applySearchText()
@@ -519,6 +563,23 @@ void MainWindow::applySearchText()
     // Whitespace-only input becomes empty, which hits the proxy’s
     // empty-string fast path.
     m_filterProxy->setSearchText(m_searchEdit->text().trimmed());
+}
+
+void MainWindow::handleSearchStateChanged(int current, int total)
+{
+    if (!m_searchCounter || !m_searchPrev || !m_searchNext)
+        return;
+
+    if (total == 0) {
+        m_searchCounter->clear();
+        m_searchPrev->setEnabled(false);
+        m_searchNext->setEnabled(false);
+    } else {
+        m_searchCounter->setText(
+            QStringLiteral("%1 / %2").arg(current).arg(total));
+        m_searchPrev->setEnabled(true);
+        m_searchNext->setEnabled(true);
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -554,7 +615,7 @@ void MainWindow::showRepoMenu()
     if (sz.isEmpty())
         sz = m_repoMenu->sizeHint();
     if (sz.isEmpty())
-        sz = QSize(220, 1);   // safe fallback if sizeHint was not yet available
+        sz = QSize(220, 1);
 
     // Align the menu’s right edge with the button’s right edge, and its
     // bottom edge with the button’s top edge, so the menu opens upward.

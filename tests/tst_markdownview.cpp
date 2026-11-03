@@ -13,6 +13,7 @@
 #include <QTextImageFormat>
 #include <QUrl>
 #include <QVariant>
+#include <QSignalSpy>
 
 #include "MarkdownView.h"
 
@@ -120,6 +121,10 @@ private slots:
     void percentEncodedPathResolves();
     void missingImageReferenceProducesNoFragment();
     void largeImageIsScaledToViewport();
+
+    void searchHighlightsAllMatches();
+    void searchClearsOnShortInput();
+    void nextMatchWraps();
 
 private:
     // Writes `content` under m_currentDir/relPath, creating parents.
@@ -496,6 +501,80 @@ void TestMarkdownView::largeImageIsScaledToViewport()
              "4000-pixel-wide image was not scaled — the viewport-capping "
              "branch in loadFile() is not running");
     QVERIFY(img.width() <= qMax(120, view.viewport()->width()));
+}
+
+void TestMarkdownView::searchHighlightsAllMatches()
+{
+    const QString path = writeMarkdown(
+        QStringLiteral("search.md"),
+        QStringLiteral("needle one\n\nneedle two\n\nneedle three"));
+    QVERIFY(!path.isEmpty());
+
+    MarkdownView view;
+    QVERIFY(view.loadFile(path));
+
+    QSignalSpy spy(&view, &MarkdownView::searchStateChanged);
+    const int count = view.searchInDocument(QStringLiteral("needle"));
+
+    QCOMPARE(count, 3);
+    QCOMPARE(view.extraSelections().size(), 3);
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(spy.at(0).at(0).toInt(), 1);   // current (1-based)
+    QCOMPARE(spy.at(0).at(1).toInt(), 3);   // total
+
+    // The first selection uses the current-match colour, the others use
+    // the all-match colour — verify the two differ so a future palette
+    // change that collapses them would fail.
+    const auto sels = view.extraSelections();
+    const QColor first  = sels[0].format.background().color();
+    const QColor second = sels[1].format.background().color();
+    QVERIFY(first.isValid());
+    QVERIFY(second.isValid());
+    QVERIFY(first != second);
+}
+
+void TestMarkdownView::searchClearsOnShortInput()
+{
+    const QString path = writeMarkdown(
+        QStringLiteral("search.md"),
+        QStringLiteral("needle one\n\nneedle two"));
+    QVERIFY(!path.isEmpty());
+
+    MarkdownView view;
+    QVERIFY(view.loadFile(path));
+
+    QCOMPARE(view.searchInDocument(QStringLiteral("needle")), 2);
+    QCOMPARE(view.extraSelections().size(), 2);
+
+    // Two characters is below the 3-char threshold — search must clear
+    // both the highlights and the counter, and return 0.
+    const int count = view.searchInDocument(QStringLiteral("ne"));
+    QCOMPARE(count, 0);
+    QVERIFY(view.extraSelections().isEmpty());
+}
+
+void TestMarkdownView::nextMatchWraps()
+{
+    const QString path = writeMarkdown(
+        QStringLiteral("search.md"),
+        QStringLiteral("needle one\n\nneedle two"));
+    QVERIFY(!path.isEmpty());
+
+    MarkdownView view;
+    QVERIFY(view.loadFile(path));
+    view.searchInDocument(QStringLiteral("needle"));
+
+    QSignalSpy spy(&view, &MarkdownView::searchStateChanged);
+
+    // Start at 1/2.  Three advances: 1->2, 2->1 (wrap), 1->2.
+    QVERIFY(view.nextMatch());
+    QVERIFY(view.nextMatch());
+    QVERIFY(view.nextMatch());
+
+    QCOMPARE(spy.count(), 3);
+    QCOMPARE(spy.at(0).at(0).toInt(), 2);   // 1 -> 2
+    QCOMPARE(spy.at(1).at(0).toInt(), 1);   // 2 -> 1 (wrap)
+    QCOMPARE(spy.at(2).at(0).toInt(), 2);   // 1 -> 2
 }
 
 QTEST_MAIN(TestMarkdownView)

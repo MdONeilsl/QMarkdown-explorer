@@ -4,6 +4,7 @@
 #include <QString>
 #include <QTextEdit>
 
+class QMouseEvent;
 class QWheelEvent;
 
 /**
@@ -46,6 +47,14 @@ class QWheelEvent;
  *   * Headings h1, h2, h3: additional top margin in line-height units.
  *     Block format only, so font zoom keeps working on headings.
  *   * Everything else: Qt’s importer defaults, untouched.
+ *
+ * In-document search:
+ *   Highlighting uses QTextEdit::setExtraSelections — widget-level
+ *   decorations, not document formats.  This is deliberate: char-format
+ *   merges would materialize font sizes and break Ctrl+wheel zoom, the
+ *   same failure mode that the code-block styling was careful to avoid.
+ *   Search is case-insensitive, requires at least 3 characters, and
+ *   re-applies automatically when a new file is loaded.
  */
 class MarkdownView : public QTextEdit
 {
@@ -72,17 +81,70 @@ public:
      *                              identical re-applications.
      * @param codeBlockBackground   Colour to paint behind fenced blocks,
      *                              or an invalid QColor to leave Qt’s
-     *                              default in place.  MainWindow reads
-     *                              this from `StyleLoader::codeBlockBackground()`.
-     *
-     * When a document is already loaded, the post-processing pass
-     * re-runs on the current document so the change is visible
-     * immediately.
+     *                              default in place.
      */
     void setTheme(const QString &themeName,
                   const QColor &codeBlockBackground);
 
+    /**
+     * @brief Loads `filePath`, preprocesses text, resolves images, and
+     *        renders.
+     *
+     * @return `true` on success.  On failure the previous document is
+     *         left untouched.
+     *
+     * If a search was active (searchInDocument with a term of 3+ chars)
+     * when the previous document was replaced, the search re-runs
+     * automatically against the new content.
+     */
     bool loadFile(const QString &filePath);
+
+    // ---- In-document search -------------------------------------------
+
+    /**
+     * @brief Highlights every case-insensitive occurrence of `needle`
+     *        in the current document and resets the current match to
+     *        the first one.
+     *
+     * @param needle  Search term.  Lengths of 0–2 characters are
+     *                treated as “no search”: existing highlights are
+     *                cleared, the counter is zeroed, and 0 is returned.
+     *                This threshold prevents the pathological case of
+     *                highlighting hundreds of matches for a single
+     *                character.
+     *
+     * @return The number of matches found (0 when `needle` is too
+     *         short or the document is empty).
+     *
+     * Emits `searchStateChanged(1, count)` on success, or
+     * `searchStateChanged(0, 0)` when the search is cleared.
+     */
+    int searchInDocument(const QString &needle);
+
+    /**
+     * @brief Clears all search highlights and resets the match count.
+     *
+     * Emits `searchStateChanged(0, 0)`.
+     */
+    void clearSearchHighlights();
+
+    /**
+     * @brief Advances to the next match, wrapping to the first at the
+     *        end.
+     *
+     * @return `true` if a new current match was set; `false` if there
+     *         are no matches (no-op).
+     */
+    bool nextMatch();
+
+    /**
+     * @brief Moves to the previous match, wrapping to the last at the
+     *        start.
+     *
+     * @return `true` if a new current match was set; `false` if there
+     *         are no matches (no-op).
+     */
+    bool previousMatch();
 
 signals:
     /**
@@ -94,15 +156,29 @@ signals:
      */
     void linkToLocalFileRequested(const QString &absolutePath);
 
+    /**
+     * @brief Emitted whenever the search state changes.
+     *
+     * @param current  1-based index of the current match, or 0 when
+     *                 there are no matches.
+     * @param total    Total number of matches, or 0 when there are none.
+     */
+    void searchStateChanged(int current, int total);
+
 protected:
     void wheelEvent(QWheelEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
 
 private:
     void applyDocumentStyles();
+    void rebuildSearchHighlights();
 
     QString m_theme;
-    QColor  m_codeBg;            // invalid => System behaviour
+    QColor  m_codeBg;
     QString m_currentFilePath;
     QString m_rootFolder;
+
+    QString m_searchTerm;
+    int     m_matchCount       = 0;
+    int     m_currentMatchIndex = 0;
 };
