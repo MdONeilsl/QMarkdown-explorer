@@ -45,6 +45,8 @@
 
 namespace {
 
+constexpr int kMaxHistory = 50;
+
 std::filesystem::path toFsPath(const QString &qstr)
 {
     const QByteArray utf8 = qstr.toUtf8();
@@ -191,6 +193,31 @@ void MainWindow::buildToolBar()
     toolbar->setObjectName(QStringLiteral("mainToolBar"));
     toolbar->setMovable(false);
     toolbar->setFloatable(false);
+
+    // Navigation history: [←] [→] on the far left, before Open Folder.
+    // WindowShortcut so Alt+Left / Alt+Right fire regardless of which
+    // child widget (tree, search box, viewer) currently has focus.
+    m_backAction = new QAction(
+        style()->standardIcon(QStyle::SP_ArrowBack), tr("Back"), this);
+    m_backAction->setObjectName(QStringLiteral("backAction"));
+    m_backAction->setShortcut(QKeySequence(QStringLiteral("Alt+Left")));
+    m_backAction->setShortcutContext(Qt::WindowShortcut);
+    m_backAction->setToolTip(tr("Back (Alt+Left)"));
+    m_backAction->setEnabled(false);
+    connect(m_backAction, &QAction::triggered,
+            this, &MainWindow::goBack);
+    toolbar->addAction(m_backAction);
+
+    m_forwardAction = new QAction(
+        style()->standardIcon(QStyle::SP_ArrowForward), tr("Forward"), this);
+    m_forwardAction->setObjectName(QStringLiteral("forwardAction"));
+    m_forwardAction->setShortcut(QKeySequence(QStringLiteral("Alt+Right")));
+    m_forwardAction->setShortcutContext(Qt::WindowShortcut);
+    m_forwardAction->setToolTip(tr("Forward (Alt+Right)"));
+    m_forwardAction->setEnabled(false);
+    connect(m_forwardAction, &QAction::triggered,
+            this, &MainWindow::goForward);
+    toolbar->addAction(m_forwardAction);
 
     auto *openAction = toolbar->addAction(tr("Open Folder…"));
     openAction->setObjectName(QStringLiteral("openFolderAction"));
@@ -401,6 +428,12 @@ void MainWindow::setRootFolder(const QString &folderPath)
     if (folderPath.isEmpty() || !m_fileModel || !m_filterProxy || !m_treeView)
         return;
 
+    // Clear history before the README auto-load so the new root's
+    // README becomes the first entry.
+    m_history.clear();
+    m_historyIndex = -1;
+    updateHistoryActions();
+
     // Order matters — see MarkdownFilterProxyModel’s usage contract.
     // The source model first, then the proxy’s cache (before the view
     // starts asking filterAcceptsRow about the new children), then the
@@ -482,31 +515,36 @@ void MainWindow::handleTreeClicked(const QModelIndex &index)
     openMarkdownFile(path);
 }
 
-void MainWindow::openMarkdownFile(const QString &filePath)
+bool MainWindow::openMarkdownFile(const QString &filePath, bool recordInHistory)
 {
     if (filePath.isEmpty())
-        return;
+        return false;
 
     // Guard against the duplicate signal a double-click produces:
-    // `clicked` and `activated` both fire for the same file.
+    // `clicked` and `activated` both fire for the same file.  This must
+    // run before any history mutation so a redundant call cannot append
+    // a second entry.
     if (filePath == m_currentFile)
-        return;
+        return false;
 
     const QFileInfo fi(filePath);
     const QString suffix = fi.suffix().toLower();
     if (suffix != QStringLiteral("md") && suffix != QStringLiteral("markdown"))
-        return;
+        return false;
 
     if (!m_markdownView->loadFile(filePath)) {
         statusBar()->showMessage(
             tr("Failed to open: %1").arg(fi.fileName()), 5000);
-        return;
+        return false;
     }
 
     m_currentFile = filePath;
+    if (recordInHistory)
+        recordHistory(filePath);
     statusBar()->showMessage(tr("Opened: %1").arg(fi.fileName()), 3000);
     // loadFile() re-applies the search term automatically; no explicit
     // searchInDocument call is needed here.
+    return true;
 }
 
 void MainWindow::handleStyleChanged(int index)
@@ -749,6 +787,58 @@ void MainWindow::addRepository()
             tr("This repository is already in the list."), 3000);
         break;
     }
+}
+
+void MainWindow::recordHistory(const QString &filePath)
+{
+    // Truncate the forward stack, then append.  Called only when
+    // recordInHistory == true, so back/forward replay never re-enters.
+    while (m_history.size() > m_historyIndex + 1)
+        m_history.removeLast();
+
+    m_history.append(filePath);
+    if (m_history.size() > kMaxHistory)
+        m_history.removeFirst();
+
+    m_historyIndex = m_history.size() - 1;
+    updateHistoryActions();
+}
+
+void MainWindow::updateHistoryActions()
+{
+    if (m_backAction)
+        m_backAction->setEnabled(m_historyIndex > 0);
+    if (m_forwardAction)
+        m_forwardAction->setEnabled(
+            m_historyIndex >= 0 && m_historyIndex < m_history.size() - 1);
+}
+
+void MainWindow::goBack()
+{
+    if (m_historyIndex <= 0)
+        return;
+
+    const int target = m_historyIndex - 1;
+    const QString filePath = m_history.at(target);
+    if (!openMarkdownFile(filePath, /*recordInHistory=*/false))
+        return;
+
+    m_historyIndex = target;
+    updateHistoryActions();
+}
+
+void MainWindow::goForward()
+{
+    if (m_historyIndex < 0 || m_historyIndex >= m_history.size() - 1)
+        return;
+
+    const int target = m_historyIndex + 1;
+    const QString filePath = m_history.at(target);
+    if (!openMarkdownFile(filePath, /*recordInHistory=*/false))
+        return;
+
+    m_historyIndex = target;
+    updateHistoryActions();
 }
 
 // -----------------------------------------------------------------------------

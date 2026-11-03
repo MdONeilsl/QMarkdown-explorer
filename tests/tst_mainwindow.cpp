@@ -130,6 +130,10 @@ private slots:
     void launchFolderOverridesSkipInitialPicker();
     void bothTransientKeysAreConsumed();
 
+    void navigationHistoryRecordsBackAndForward();
+    void sameFileClickDoesNotDuplicateHistory();
+    void rootChangeClearsHistory();
+
 private:
     // Creates a valid folder inside the fixture’s temp directory and
     // returns its absolute path.  Used to give LaunchFolder a target.
@@ -363,6 +367,106 @@ void TestMainWindow::bothTransientKeysAreConsumed()
              "LaunchFolder was not cleared");
     QVERIFY2(!s.value(QStringLiteral("SkipInitialPicker")).toBool(),
              "SkipInitialPicker was not cleared when LaunchFolder won");
+}
+
+void TestMainWindow::navigationHistoryRecordsBackAndForward()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString aPath = root.filePath(QStringLiteral("a.md"));
+    const QString bPath = root.filePath(QStringLiteral("b.md"));
+    {
+        QFile f(aPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("# A\n");
+    }
+    {
+        QFile f(bPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("# B\n");
+    }
+
+    MainWindow win;
+    win.setRootFolder(root.path());
+    QCOMPARE(win.historySize(), 0);
+    QCOMPARE(win.historyIndex(), -1);
+
+    QVERIFY(win.openMarkdownFile(aPath));
+    QCOMPARE(win.historySize(), 1);
+    QCOMPARE(win.historyIndex(), 0);
+    QCOMPARE(win.currentFile(), aPath);
+    QVERIFY(!win.findChild<QAction *>(QStringLiteral("backAction"))->isEnabled());
+    QVERIFY(!win.findChild<QAction *>(QStringLiteral("forwardAction"))->isEnabled());
+
+    QVERIFY(win.openMarkdownFile(bPath));
+    QCOMPARE(win.historySize(), 2);
+    QCOMPARE(win.historyIndex(), 1);
+    QCOMPARE(win.currentFile(), bPath);
+    QVERIFY(win.findChild<QAction *>(QStringLiteral("backAction"))->isEnabled());
+    QVERIFY(!win.findChild<QAction *>(QStringLiteral("forwardAction"))->isEnabled());
+
+    QVERIFY(QMetaObject::invokeMethod(&win, "goBack"));
+    QCOMPARE(win.historyIndex(), 0);
+    QCOMPARE(win.currentFile(), aPath);
+    QVERIFY(!win.findChild<QAction *>(QStringLiteral("backAction"))->isEnabled());
+    QVERIFY(win.findChild<QAction *>(QStringLiteral("forwardAction"))->isEnabled());
+
+    QVERIFY(QMetaObject::invokeMethod(&win, "goForward"));
+    QCOMPARE(win.historyIndex(), 1);
+    QCOMPARE(win.currentFile(), bPath);
+    QVERIFY(win.findChild<QAction *>(QStringLiteral("backAction"))->isEnabled());
+    QVERIFY(!win.findChild<QAction *>(QStringLiteral("forwardAction"))->isEnabled());
+}
+
+void TestMainWindow::sameFileClickDoesNotDuplicateHistory()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString aPath = root.filePath(QStringLiteral("a.md"));
+    {
+        QFile f(aPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("# A\n");
+    }
+
+    MainWindow win;
+    win.setRootFolder(root.path());
+
+    QVERIFY(win.openMarkdownFile(aPath));
+    QCOMPARE(win.historySize(), 1);
+    QCOMPARE(win.historyIndex(), 0);
+
+    // Same-file guard must return false and leave history untouched.
+    QVERIFY(!win.openMarkdownFile(aPath));
+    QCOMPARE(win.historySize(), 1);
+    QCOMPARE(win.historyIndex(), 0);
+}
+
+void TestMainWindow::rootChangeClearsHistory()
+{
+    QTemporaryDir root1;
+    QTemporaryDir root2;
+    QVERIFY(root1.isValid());
+    QVERIFY(root2.isValid());
+    const QString aPath = root1.filePath(QStringLiteral("a.md"));
+    {
+        QFile f(aPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("# A\n");
+    }
+
+    MainWindow win;
+    win.setRootFolder(root1.path());
+    QVERIFY(win.openMarkdownFile(aPath));
+    QCOMPARE(win.historySize(), 1);
+    QCOMPARE(win.historyIndex(), 0);
+    QVERIFY(win.findChild<QAction *>(QStringLiteral("backAction")) != nullptr);
+
+    win.setRootFolder(root2.path());
+    QCOMPARE(win.historySize(), 0);
+    QCOMPARE(win.historyIndex(), -1);
+    QVERIFY(!win.findChild<QAction *>(QStringLiteral("backAction"))->isEnabled());
+    QVERIFY(!win.findChild<QAction *>(QStringLiteral("forwardAction"))->isEnabled());
 }
 
 QTEST_MAIN(TestMainWindow)
