@@ -14,10 +14,10 @@
 #include <QUrl>
 #include <QVariant>
 #include <QSignalSpy>
+#include <QTextCursor>
 
 #include "MarkdownView.h"
 
-#include <cstddef>
 #include <filesystem>
 
 namespace {
@@ -125,6 +125,19 @@ private slots:
     void searchHighlightsAllMatches();
     void searchClearsOnShortInput();
     void nextMatchWraps();
+
+        // ---- Hyperlink dispatch -------------------------------------------
+    void anchorScrollsToHeading();
+    void anchorIsCaseInsensitive();
+    void anchorWithPunctuationResolves();
+    void duplicateAnchorsGetIncrementedSlugs();
+    void missingAnchorIsNoOp();
+    void crossFileLinkEmitsSignal();
+    void mixedFileAnchorLinkIsRejected();
+    void webLinkIsRejected();
+    void outOfRootLinkIsRejected();
+
+    void searchFindsMatchesInsideLinks();
 
 private:
     // Writes `content` under m_currentDir/relPath, creating parents.
@@ -575,6 +588,283 @@ void TestMarkdownView::nextMatchWraps()
     QCOMPARE(spy.at(0).at(0).toInt(), 2);   // 1 -> 2
     QCOMPARE(spy.at(1).at(0).toInt(), 1);   // 2 -> 1 (wrap)
     QCOMPARE(spy.at(2).at(0).toInt(), 2);   // 1 -> 2
+}
+
+// -----------------------------------------------------------------------------
+//  Hyperlink dispatch
+// -----------------------------------------------------------------------------
+
+void TestMarkdownView::anchorScrollsToHeading()
+{
+    const QString path = writeMarkdown(
+        QStringLiteral("anchors.md"),
+        QStringLiteral(
+            "# First\n\n"
+            "Some text.\n\n"
+            "## Second Section\n\n"
+            "More text.\n\n"
+            "## Third Section\n\n"
+            "End.\n"));
+    QVERIFY(!path.isEmpty());
+
+    MarkdownView view;
+    QVERIFY(view.loadFile(path));
+
+    int targetBlock = -1;
+    for (auto blk = view.document()->begin();
+         blk.isValid(); blk = blk.next()) {
+        if (blk.text() == QStringLiteral("Second Section")) {
+            targetBlock = blk.blockNumber();
+            break;
+        }
+    }
+    QVERIFY(targetBlock >= 0);
+
+    // Park the cursor at the end so the scroll-to-anchor is what moves it.
+    QTextCursor c(view.document());
+    c.movePosition(QTextCursor::End);
+    view.setTextCursor(c);
+
+    view.handleLink(QStringLiteral("#second-section"));
+
+    QCOMPARE(view.textCursor().block().blockNumber(), targetBlock);
+}
+
+void TestMarkdownView::anchorIsCaseInsensitive()
+{
+    const QString path = writeMarkdown(
+        QStringLiteral("case.md"),
+        QStringLiteral("# My Heading\n\nContent."));
+    QVERIFY(!path.isEmpty());
+
+    MarkdownView view;
+    QVERIFY(view.loadFile(path));
+
+    int targetBlock = -1;
+    for (auto blk = view.document()->begin();
+         blk.isValid(); blk = blk.next()) {
+        if (blk.text() == QStringLiteral("My Heading")) {
+            targetBlock = blk.blockNumber();
+            break;
+        }
+    }
+    QVERIFY(targetBlock >= 0);
+
+    QTextCursor c(view.document());
+    c.movePosition(QTextCursor::End);
+    view.setTextCursor(c);
+
+    view.handleLink(QStringLiteral("#MY-HEADING"));
+    QCOMPARE(view.textCursor().block().blockNumber(), targetBlock);
+}
+
+void TestMarkdownView::anchorWithPunctuationResolves()
+{
+    // GitHub slug rules: "What's New?" → "whats-new".
+    const QString path = writeMarkdown(
+        QStringLiteral("punct.md"),
+        QStringLiteral("# What's New?\n\nContent."));
+    QVERIFY(!path.isEmpty());
+
+    MarkdownView view;
+    QVERIFY(view.loadFile(path));
+
+    int targetBlock = -1;
+    for (auto blk = view.document()->begin();
+         blk.isValid(); blk = blk.next()) {
+        if (blk.text() == QStringLiteral("What's New?")) {
+            targetBlock = blk.blockNumber();
+            break;
+        }
+    }
+    QVERIFY(targetBlock >= 0);
+
+    QTextCursor c(view.document());
+    c.movePosition(QTextCursor::End);
+    view.setTextCursor(c);
+
+    view.handleLink(QStringLiteral("#whats-new"));
+    QCOMPARE(view.textCursor().block().blockNumber(), targetBlock);
+}
+
+void TestMarkdownView::duplicateAnchorsGetIncrementedSlugs()
+{
+    const QString path = writeMarkdown(
+        QStringLiteral("dupes.md"),
+        QStringLiteral(
+            "# Section\n\n"
+            "First.\n\n"
+            "# Section\n\n"
+            "Second.\n\n"
+            "# Section\n\n"
+            "Third.\n"));
+    QVERIFY(!path.isEmpty());
+
+    MarkdownView view;
+    QVERIFY(view.loadFile(path));
+
+    QList<int> sectionBlocks;
+    for (auto blk = view.document()->begin();
+         blk.isValid(); blk = blk.next()) {
+        if (blk.text() == QStringLiteral("Section"))
+            sectionBlocks.append(blk.blockNumber());
+    }
+    QCOMPARE(sectionBlocks.size(), 3);
+
+    view.handleLink(QStringLiteral("#section-1"));
+    QCOMPARE(view.textCursor().block().blockNumber(), sectionBlocks[1]);
+
+    view.handleLink(QStringLiteral("#section-2"));
+    QCOMPARE(view.textCursor().block().blockNumber(), sectionBlocks[2]);
+
+    // Bare slug still targets the first heading.
+    view.handleLink(QStringLiteral("#section"));
+    QCOMPARE(view.textCursor().block().blockNumber(), sectionBlocks[0]);
+}
+
+void TestMarkdownView::missingAnchorIsNoOp()
+{
+    const QString path = writeMarkdown(
+        QStringLiteral("only-one.md"),
+        QStringLiteral("# Real Heading\n\nContent."));
+    QVERIFY(!path.isEmpty());
+
+    MarkdownView view;
+    QVERIFY(view.loadFile(path));
+
+    QTextCursor c(view.document());
+    c.movePosition(QTextCursor::End);
+    view.setTextCursor(c);
+
+    const int beforeBlock = view.textCursor().block().blockNumber();
+
+    // No such heading — cursor must not move.
+    view.handleLink(QStringLiteral("#does-not-exist"));
+
+    QCOMPARE(view.textCursor().block().blockNumber(), beforeBlock);
+}
+
+void TestMarkdownView::crossFileLinkEmitsSignal()
+{
+    const QString pathA = writeMarkdown(
+        QStringLiteral("a.md"), QStringLiteral("# A"));
+    const QString pathB = writeMarkdown(
+        QStringLiteral("b.md"), QStringLiteral("# B"));
+    QVERIFY(!pathA.isEmpty());
+    QVERIFY(!pathB.isEmpty());
+
+    MarkdownView view;
+    view.setRootFolder(m_currentDir);
+    QVERIFY(view.loadFile(pathA));
+
+    QSignalSpy spy(&view, &MarkdownView::linkToLocalFileRequested);
+
+    view.handleLink(QStringLiteral("b.md"));
+
+    QCOMPARE(spy.count(), 1);
+    const QString emitted = spy.at(0).at(0).toString();
+    QCOMPARE(QFileInfo(emitted).canonicalFilePath(),
+             QFileInfo(pathB).canonicalFilePath());
+}
+
+void TestMarkdownView::mixedFileAnchorLinkIsRejected()
+{
+    const QString pathA = writeMarkdown(
+        QStringLiteral("a.md"), QStringLiteral("# A\n\nContent."));
+    const QString pathB = writeMarkdown(
+        QStringLiteral("b.md"), QStringLiteral("# B\n\nContent."));
+    QVERIFY(!pathA.isEmpty());
+    QVERIFY(!pathB.isEmpty());
+
+    MarkdownView view;
+    view.setRootFolder(m_currentDir);
+    QVERIFY(view.loadFile(pathA));
+
+    QSignalSpy spy(&view, &MarkdownView::linkToLocalFileRequested);
+
+    QTextCursor c(view.document());
+    c.movePosition(QTextCursor::End);
+    view.setTextCursor(c);
+    const int beforeBlock = view.textCursor().block().blockNumber();
+
+    // Mixed link must be rejected: no cross-file signal, no anchor scroll.
+    view.handleLink(QStringLiteral("b.md#b"));
+
+    QCOMPARE(spy.count(), 0);
+    QCOMPARE(view.textCursor().block().blockNumber(), beforeBlock);
+}
+
+void TestMarkdownView::webLinkIsRejected()
+{
+    const QString path = writeMarkdown(
+        QStringLiteral("web.md"), QStringLiteral("# W"));
+    QVERIFY(!path.isEmpty());
+
+    MarkdownView view;
+    view.setRootFolder(m_currentDir);
+    QVERIFY(view.loadFile(path));
+
+    QSignalSpy spy(&view, &MarkdownView::linkToLocalFileRequested);
+
+    view.handleLink(QStringLiteral("https://example.com"));
+    QCOMPARE(spy.count(), 0);
+
+    view.handleLink(QStringLiteral("http://example.com/page"));
+    QCOMPARE(spy.count(), 0);
+}
+
+void TestMarkdownView::outOfRootLinkIsRejected()
+{
+    // File inside the root.
+    const QString insidePath = writeMarkdown(
+        QStringLiteral("inside.md"), QStringLiteral("# Inside"));
+    QVERIFY(!insidePath.isEmpty());
+
+    // File outside the root — sibling of m_currentDir under m_tmp.
+    const QString outsideDir = m_tmp.path() + QStringLiteral("/outside");
+    QVERIFY(QDir().mkpath(outsideDir));
+    const QString outsidePath = outsideDir + QStringLiteral("/outside.md");
+    {
+        QFile f(outsidePath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("# Outside\n");
+    }
+
+    MarkdownView view;
+    view.setRootFolder(m_currentDir);
+    QVERIFY(view.loadFile(insidePath));
+
+    QSignalSpy spy(&view, &MarkdownView::linkToLocalFileRequested);
+
+    // Relative traversal that escapes the root must be rejected.
+    view.handleLink(QStringLiteral("../outside/outside.md"));
+    QCOMPARE(spy.count(), 0);
+
+    // Absolute path to the same file must also be rejected.
+    view.handleLink(outsidePath);
+    QCOMPARE(spy.count(), 0);
+}
+
+void TestMarkdownView::searchFindsMatchesInsideLinks()
+{
+    // Regression test for anchor text being invisible to search:
+    // three occurrences of "needle" — one in plain text, two inside
+    // link labels.  All three must be highlighted.  With the old
+    // QTextDocument::find loop, only the plain occurrence came back.
+    const QString path = writeMarkdown(
+        QStringLiteral("link-search.md"),
+        QStringLiteral(
+            "Plain needle here.\n\n"
+            "[needle in link](other.md)\n\n"
+            "[another needle](another.md)\n"));
+    QVERIFY(!path.isEmpty());
+
+    MarkdownView view;
+    QVERIFY(view.loadFile(path));
+
+    const int count = view.searchInDocument(QStringLiteral("needle"));
+    QCOMPARE(count, 3);
+    QCOMPARE(view.extraSelections().size(), 3);
 }
 
 QTEST_MAIN(TestMarkdownView)

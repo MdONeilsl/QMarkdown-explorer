@@ -173,6 +173,45 @@ const QColor kAllMatchBg(0xFF, 0xF1, 0x76);   // material yellow 300
 const QColor kCurrentMatchBg(0xFF, 0xB7, 0x4D); // material orange 300
 const QColor kMatchFg(0x00, 0x00, 0x00);
 
+
+/**
+ * @brief Slugifies heading text the way GitHub does.
+ *
+ * Lowercase; letters and digits are kept; runs of spaces or hyphens
+ * collapse to a single hyphen; all other punctuation is dropped;
+ * leading and trailing hyphens are stripped.
+ *
+ * The result is used both when matching a clicked fragment against a
+ * heading and — via the caller’s duplicate counter — to produce the
+ * `-1`, `-2`, … suffixed variants for repeated headings.
+ */
+QString slugifyHeading(const QString &text)
+{
+    QString result;
+    result.reserve(text.size());
+
+    bool anyLetter   = false;
+    bool lastHyphen  = false;
+
+    for (const QChar ch : text) {
+        if (ch.isLetterOrNumber()) {
+            result.append(ch.toLower());
+            anyLetter  = true;
+            lastHyphen = false;
+        } else if (ch.isSpace() || ch == u'-') {
+            if (anyLetter && !lastHyphen) {
+                result.append(u'-');
+                lastHyphen = true;
+            }
+        }
+        // Everything else (punctuation, symbols) is discarded.
+    }
+
+    while (result.endsWith(u'-'))
+        result.chop(1);
+
+    return result;
+}
 } // namespace
 
 MarkdownView::MarkdownView(QWidget *parent)
@@ -188,6 +227,11 @@ MarkdownView::MarkdownView(QWidget *parent)
     // has no setOpenExternalLinks property — that is a QTextBrowser-only
     // convenience — so anchors are handled via mouseReleaseEvent.
     setTextInteractionFlags(Qt::TextBrowserInteraction);
+
+    // Mouse tracking drives the hover cursor over links.  Without this,
+    // mouseMoveEvent only fires while a button is held down, so the
+    // cursor never updates on plain hover.
+    viewport()->setMouseTracking(true);
 
     auto *doc = new MarkdownDocument(this);
     setDocument(doc);
@@ -264,6 +308,28 @@ void MarkdownView::wheelEvent(QWheelEvent *event)
     }
 }
 
+void MarkdownView::mousePressEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton)
+        m_leftButtonPressPos = event->pos();
+
+    QTextEdit::mousePressEvent(event);
+}
+
+void MarkdownView::mouseMoveEvent(QMouseEvent *event)
+{
+    QTextEdit::mouseMoveEvent(event);
+
+    // Update the hover cursor only while no button is held.  During a
+    // drag (text selection) the cursor stays as the default I-beam so
+    // the gesture reads as "selecting text", not "about to navigate".
+    if (event->buttons() == Qt::NoButton) {
+        const bool overLink = !anchorAt(event->pos()).isEmpty();
+        viewport()->setCursor(overLink ? Qt::PointingHandCursor
+                                       : Qt::IBeamCursor);
+    }
+}
+
 void MarkdownView::mouseReleaseEvent(QMouseEvent *event)
 {
     // QTextEdit has no anchorClicked signal — that is QTextBrowser-only.
@@ -271,79 +337,157 @@ void MarkdownView::mouseReleaseEvent(QMouseEvent *event)
     // ask anchorAt() whether a link sits under the cursor position.
     // anchorAt() returns the href string, or an empty QString when
     // there is no anchor at that point.
+    //
+    // A press/release pair with little movement is treated as a click;
+    // a larger movement is a drag that produces a text selection, and
+    // the release must not navigate.  Without this guard, drag-selecting
+    // link text (or text spanning a link) to copy it fires navigation on
+    // release and destroys the selection.
     if (event->button() == Qt::LeftButton) {
-        const QString href = anchorAt(event->pos());
-        if (!href.isEmpty()) {
-            const QUrl url(href);
+        const QPoint delta = event->pos() - m_leftButtonPressPos;
+        const int threshold = QApplication::startDragDistance();
+        const bool isClick =
+            (delta.x() * delta.x() + delta.y() * delta.y())
+            <= threshold * threshold;
 
-            // Rule 2 guard: web links should already have been
-            // converted to plain text by convertWebLinksToPlainText().
-            // If an http/https URL somehow survives as an anchor,
-            // reject it — do not let a click open a browser.
-            const QString scheme = url.scheme().toLower();
-            if (scheme == QStringLiteral("http")
-                || scheme == QStringLiteral("https")) {
+        if (isClick) {
+            const QString href = anchorAt(event->pos());
+            if (!href.isEmpty()) {
+                handleLink(href);
                 event->accept();
                 return;
             }
-
-            // In-document anchor (e.g. `[top](#section)`) — not
-            // supported yet.  Reject cleanly.
-            if (url.path().isEmpty() && !url.fragment().isEmpty()) {
-                event->accept();
-                return;
-            }
-
-            // Resolve the target to an absolute path.
-            QString targetPath;
-            if (url.isLocalFile()) {
-                targetPath = url.toLocalFile();
-            } else if (scheme.isEmpty()) {
-                const QDir currentDir =
-                    QFileInfo(m_currentFilePath).absoluteDir();
-                targetPath = currentDir.absoluteFilePath(url.path());
-            } else {
-                event->accept();
-                return;
-            }
-
-            // Rule 1 guard: reject anything outside the root.  Canonical
-            // comparison handles symlinks and Windows case normalisation.
-            if (m_rootFolder.isEmpty()) {
-                event->accept();
-                return;
-            }
-
-            const QFileInfo targetInfo(targetPath);
-            if (!targetInfo.isFile()) {
-                event->accept();
-                return;
-            }
-
-            const QString targetCanonical = targetInfo.canonicalFilePath();
-            const QString rootCanonical =
-                QFileInfo(m_rootFolder).canonicalFilePath();
-            if (targetCanonical.isEmpty() || rootCanonical.isEmpty()) {
-                event->accept();
-                return;
-            }
-
-            // Trailing separator so "/root/foo" matches but
-            // "/rootbar/foo" does not.
-            const QString rootPrefix = rootCanonical + u'/';
-            if (!targetCanonical.startsWith(rootPrefix)) {
-                event->accept();
-                return;
-            }
-
-            emit linkToLocalFileRequested(targetCanonical);
-            event->accept();
-            return;
         }
     }
 
-    // Not a link click — let the base class handle selection, etc.
+    // Not a link click (or it was a drag) — let the base class handle
+    // selection, etc.
     QTextEdit::mouseReleaseEvent(event);
+}
+
+void MarkdownView::handleLink(const QString &href)
+{
+    if (href.isEmpty())
+        return;
+
+    const QUrl url(href);
+
+    // Rule 2: web links are never clickable.  convertWebLinksToPlainText()
+    // normally strips them before parsing, so this is defense-in-depth
+    // against a hand-edited anchor that slipped through.
+    const QString scheme = url.scheme().toLower();
+    if (scheme == QStringLiteral("http")
+        || scheme == QStringLiteral("https")) {
+        return;
+    }
+
+    const bool hasFragment = !url.fragment().isEmpty();
+    const bool hasPath     = !url.path().isEmpty();
+
+    // Mixed links (file.md#section) are rejected by design: cross-file
+    // links navigate, anchors scroll, and the two are never combined.
+    // Degrading to one or the other silently would make the behaviour
+    // depend on the target’s presence on disk, which is a class of bug
+    // we specifically do not want.
+    if (hasFragment && hasPath)
+        return;
+
+    // Anchor-only (e.g. `#section`) — scroll, never open.
+    if (hasFragment && !hasPath) {
+        scrollToAnchor(url.fragment());
+        return;
+    }
+
+    // Neither fragment nor path (`"#"` alone, or an opaque href) —
+    // nothing to do.
+    if (!hasPath)
+        return;
+
+    // Cross-file link.  Resolve to an absolute path.
+    QString targetPath;
+    if (url.isLocalFile()) {
+        targetPath = url.toLocalFile();
+    } else if (scheme.isEmpty()) {
+        const QDir currentDir =
+            QFileInfo(m_currentFilePath).absoluteDir();
+        targetPath = currentDir.absoluteFilePath(url.path());
+    } else {
+        return;  // unknown scheme (mailto:, ftp:, ...) — not our job
+    }
+
+    // Rule 1: reject anything outside the root.  Canonical comparison
+    // handles symlinks and Windows case normalisation.
+    if (m_rootFolder.isEmpty())
+        return;
+
+    const QFileInfo targetInfo(targetPath);
+    if (!targetInfo.isFile())
+        return;
+
+    const QString targetCanonical = targetInfo.canonicalFilePath();
+    const QString rootCanonical =
+        QFileInfo(m_rootFolder).canonicalFilePath();
+    if (targetCanonical.isEmpty() || rootCanonical.isEmpty())
+        return;
+
+    // Trailing separator so "/root/foo" matches but "/rootbar/foo" does not.
+    const QString rootPrefix = rootCanonical + u'/';
+    if (!targetCanonical.startsWith(rootPrefix))
+        return;
+
+    emit linkToLocalFileRequested(targetCanonical);
+}
+
+void MarkdownView::scrollToAnchor(const QString &fragment)
+{
+    auto *doc = document();
+    if (!doc || fragment.isEmpty())
+        return;
+
+    // Fragment is case-insensitive: GitHub slugifies headings to
+    // lowercase, and users routinely type `#My-Section` expecting the
+    // same target as `#my-section`.
+    const QString needle = fragment.toLower();
+
+    // Same base font used by applyDocumentStyles for heading detection,
+    // so any heading that has been styled is also reachable as an anchor.
+    const double basePt = font().pointSizeF() > 0.0
+                              ? font().pointSizeF()
+                              : static_cast<double>(kDefaultZoomPt);
+
+    // GitHub de-duplication: the first heading with a given slug gets
+    // the bare slug; subsequent ones get `slug-1`, `slug-2`, and so on.
+    QHash<QString, int> seen;
+
+    QTextBlock block = doc->begin();
+    while (block.isValid()) {
+        const int level = detectHeadingLevel(block, basePt);
+        if (level >= 1 && level <= 6) {
+            const QString base = slugifyHeading(block.text());
+            const int count = seen.value(base, 0);
+            seen.insert(base, count + 1);
+
+            const QString candidate = (count == 0)
+                ? base
+                : base + u'-' + QString::number(count);
+
+            if (!candidate.isEmpty() && candidate == needle) {
+                // Move the cursor to the start of the heading block and
+                // scroll it into view.  No format mutation — block and
+                // char formats stay exactly as applyDocumentStyles left
+                // them, so Ctrl+wheel zoom and the code-block tint are
+                // unaffected.
+                QTextCursor c(block);
+                c.movePosition(QTextCursor::StartOfBlock);
+                setTextCursor(c);
+                ensureCursorVisible();
+                return;
+            }
+        }
+        block = block.next();
+    }
+    // No matching heading — silent no-op, matching every other
+    // rejected-link path.
 }
 
 void MarkdownView::applyDocumentStyles()
@@ -464,25 +608,43 @@ void MarkdownView::rebuildSearchHighlights()
         return;
     }
 
-    // Collect all matches with QTextDocument::find (case-insensitive
-    // by default; no FindCaseSensitively flag).  Each find() call
-    // starts after the previous match’s selection, so a single cursor
-    // walks the whole document.
+    // Walk blocks manually instead of calling QTextDocument::find.
+    // QTextDocument::find operates on the document's plain-text index
+    // and skips text inside anchors in some Qt versions, which means a
+    // search term inside a hyperlink's visible label was silently
+    // invisible to search.  Block-by-block walking sees
+    // QTextBlock::text(), which includes anchor text (and any other
+    // char-format-embellished text), so every visible occurrence is
+    // found uniformly.
     QList<QTextEdit::ExtraSelection> selections;
-    QTextCursor cursor(doc);
-    while (true) {
-        cursor = doc->find(m_searchTerm, cursor);
-        if (cursor.isNull())
-            break;
 
-        QTextEdit::ExtraSelection sel;
-        sel.cursor = cursor;
-        sel.format.setBackground(
-            (selections.size() == m_currentMatchIndex)
-                ? kCurrentMatchBg
-                : kAllMatchBg);
-        sel.format.setForeground(kMatchFg);
-        selections.append(sel);
+    QTextBlock block = doc->begin();
+    while (block.isValid()) {
+        const QString text = block.text();
+        int from = 0;
+        while (true) {
+            const int idx = text.indexOf(m_searchTerm, from,
+                                         Qt::CaseInsensitive);
+            if (idx < 0)
+                break;
+
+            QTextCursor c(block);
+            c.setPosition(block.position() + idx);
+            c.setPosition(block.position() + idx + m_searchTerm.length(),
+                          QTextCursor::KeepAnchor);
+
+            QTextEdit::ExtraSelection sel;
+            sel.cursor = c;
+            sel.format.setBackground(
+                (selections.size() == m_currentMatchIndex)
+                    ? kCurrentMatchBg
+                    : kAllMatchBg);
+            sel.format.setForeground(kMatchFg);
+            selections.append(sel);
+
+            from = idx + m_searchTerm.length();
+        }
+        block = block.next();
     }
 
     m_matchCount = selections.size();

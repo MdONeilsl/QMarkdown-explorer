@@ -3,6 +3,10 @@
 #include <QColor>
 #include <QString>
 #include <QTextEdit>
+#include <QColor>
+#include <QPoint>
+#include <QString>
+#include <QTextEdit>
 
 class QMouseEvent;
 class QWheelEvent;
@@ -24,9 +28,18 @@ class QWheelEvent;
  *          }
  *
  * Hyperlinks:
- *   * Local links are clickable and emit linkToLocalFileRequested with
- *     the resolved absolute path.  The path is validated against the
- *     root folder — anything outside the root is rejected (rule 1).
+ *   * Cross-file links (`[text](other.md)`) are clickable and emit
+ *     linkToLocalFileRequested with the resolved absolute path.  The
+ *     path is validated against the root folder — anything outside
+ *     the root is rejected (rule 1).
+ *   * In-document anchors (`[text](#section)`) scroll the current
+ *     view to the matching heading.  Heading text is slugified the
+ *     GitHub way: lowercase, spaces to hyphens, punctuation dropped;
+ *     duplicates get `-1`, `-2`, … suffixes.  An anchor never opens
+ *     a document.
+ *   * Mixed links (`[text](other.md#section)`) are rejected by
+ *     design.  Cross-file links navigate, anchors scroll, and the
+ *     two are never combined.
  *   * Web links (http:// and https://) are converted to plain text
  *     before markdown parsing, so they are visible and copyable but
  *     never clickable (rule 2).
@@ -99,6 +112,30 @@ public:
      */
     bool loadFile(const QString &filePath);
 
+    /**
+     * @brief Dispatches a click on an in-document link.
+     *
+     * The `href` is the raw string returned by QTextEdit::anchorAt()
+     * — for example `"other.md"`, `"#section"`, `"other.md#section"`,
+     * or `"https://example.com"`.  This is the *only* dispatch point:
+     * mouseReleaseEvent calls this for every non-empty anchor, and the
+     * tests call it directly.
+     *
+     * Behaviour by case:
+     *   * `http://` / `https://`         → silently rejected.
+     *   * `#fragment`                    → scroll to matching heading.
+     *   * `file.md#fragment`             → silently rejected (mixed).
+     *   * `file.md`, `file:`, relative   → emit linkToLocalFileRequested
+     *                                       when the target is a file
+     *                                       inside the root folder.
+     *   * Anything else                  → silently rejected.
+     *
+     * The dispatch never falls through — a non-empty href is always
+     * consumed.  Public so tests can drive it without synthesising
+     * mouse events.
+     */
+    void handleLink(const QString &href);
+
     // ---- In-document search -------------------------------------------
 
     /**
@@ -167,11 +204,28 @@ signals:
 
 protected:
     void wheelEvent(QWheelEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
 
 private:
     void applyDocumentStyles();
     void rebuildSearchHighlights();
+
+    /**
+     * @brief Scrolls the view to the heading whose slug matches
+     *        `fragment`.
+     *
+     * Uses setTextCursor + ensureCursorVisible — the same mechanism
+     * used elsewhere for cursor positioning — rather than Qt’s
+     * `scrollToAnchor`, which would require QTextCharFormat anchor
+     * names on every heading block.  Keeping char formats untouched
+     * is what preserves Ctrl+wheel zoom.
+     *
+     * Silent no-op when no heading matches, mirroring every other
+     * rejected-link path.
+     */
+    void scrollToAnchor(const QString &fragment);
 
     QString m_theme;
     QColor  m_codeBg;
@@ -181,4 +235,9 @@ private:
     QString m_searchTerm;
     int     m_matchCount       = 0;
     int     m_currentMatchIndex = 0;
+
+    /// Position of the last left-button press.  Used to distinguish a
+    /// click (which navigates) from a drag (which selects text and must
+    /// not navigate, so the user can drag-select link text and copy it).
+    QPoint m_leftButtonPressPos;
 };
