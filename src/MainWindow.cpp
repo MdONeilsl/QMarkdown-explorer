@@ -379,12 +379,19 @@ void MainWindow::wireModelAndView()
 
     connect(m_markdownView, &MarkdownView::linkToLocalFileRequested,
         this, [this](const QString &absolutePath) {
-            // The signal already validates that the target is a
-            // file inside the root.  openMarkdownFile() re-checks
-            // the suffix and refuses anything that is not .md /
-            // .markdown, which is the correct policy for a
-            // click-navigated link.
-            //
+            // The signal already validates that the target exists and
+            // lies inside the root.  A directory behaves like a folder
+            // click in the tree — load its README (if any) and reveal
+            // the folder row.  A file goes through openMarkdownFile,
+            // which re-checks the suffix and refuses anything that is
+            // not .md / .markdown.
+            const QFileInfo info(absolutePath);
+            if (info.isDir()) {
+                loadFolderReadme(absolutePath);
+                revealFileInTree(absolutePath, /*scrollToItem=*/false);
+                return;
+            }
+
             // SelectNoScroll: the click came from the viewer, not the
             // tree, so update the tree’s selection to reflect the new
             // current file without moving the tree panel’s viewport
@@ -931,7 +938,25 @@ void MainWindow::revealFileInTree(const QString &filePath, bool scrollToItem)
     if (!m_fileModel || !m_filterProxy || !m_treeView)
         return;
 
-    const QModelIndex srcIdx = m_fileModel->index(filePath);
+    // A subfolder README is hidden from the tree by filterAcceptsRow
+    // rule 3, so it has no reachable row.  Selecting the parent folder
+    // is the equivalent reveal — clicking that folder loads the same
+    // README, and the folder row is what represents the README’s
+    // location in the tree.  The root README is exempt from the
+    // redirect: rule 3 allows it to be visible, so it has a real row.
+    QString targetPath = filePath;
+    const QFileInfo info(filePath);
+    if (!m_rootFolder.isEmpty()
+        && info.fileName().compare(QStringLiteral("README.md"),
+                                    Qt::CaseInsensitive) == 0) {
+        const QString parent = info.absolutePath();
+        if (QString::compare(parent, m_rootFolder,
+                             Qt::CaseInsensitive) != 0) {
+            targetPath = parent;
+        }
+    }
+
+    const QModelIndex srcIdx = m_fileModel->index(targetPath);
     if (!srcIdx.isValid())
         return;
 

@@ -28,7 +28,8 @@ class QWheelEvent;
  *          }
  *
  * Hyperlinks:
- *   * Cross-file links (`[text](other.md)`) are clickable and emit
+ *   * Cross-file links (`[text](other.md)`) and folder links
+ *     (`[text](other/)`) are clickable and emit
  *     linkToLocalFileRequested with the resolved absolute path.  The
  *     path is validated against the root folder — anything outside
  *     the root is rejected (rule 1).
@@ -125,9 +126,11 @@ public:
      *   * `http://` / `https://`         → silently rejected.
      *   * `#fragment`                    → scroll to matching heading.
      *   * `file.md#fragment`             → silently rejected (mixed).
-     *   * `file.md`, `file:`, relative   → emit linkToLocalFileRequested
-     *                                       when the target is a file
-     *                                       inside the root folder.
+     *   * `file.md`, `sub/`, `file:`,
+     *     relative                       → emit linkToLocalFileRequested
+     *                                       when the target exists (as a
+     *                                       file or a directory) inside
+     *                                       the root folder.
      *   * Anything else                  → silently rejected.
      *
      * The dispatch never falls through — a non-empty href is always
@@ -188,8 +191,12 @@ signals:
      * @brief Emitted when the user clicks a local link inside a
      *        rendered document.
      *
-     * The path is absolute, canonical, and guaranteed to lie inside the
-     * current root folder.
+     * The path is absolute, canonical, and guaranteed to exist inside
+     * the current root folder.  It may point at a Markdown file or at a
+     * directory; the receiver distinguishes the two by checking
+     * QFileInfo::isDir().  A directory target is equivalent to a folder
+     * click in the tree: load the folder’s README if one is present,
+     * and reveal the folder row.
      */
     void linkToLocalFileRequested(const QString &absolutePath);
 

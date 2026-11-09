@@ -421,8 +421,13 @@ void MarkdownView::handleLink(const QString &href)
     if (m_rootFolder.isEmpty())
         return;
 
+    // A folder link is legal and behaves like a folder click in the
+    // tree — the receiver loads its README and reveals the folder row.
+    // Both files and directories are accepted here; the signal
+    // contract documents that the receiver distinguishes them by
+    // QFileInfo::isDir().
     const QFileInfo targetInfo(targetPath);
-    if (!targetInfo.isFile())
+    if (!targetInfo.isFile() && !targetInfo.isDir())
         return;
 
     const QString targetCanonical = targetInfo.canonicalFilePath();
