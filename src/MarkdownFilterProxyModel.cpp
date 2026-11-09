@@ -5,12 +5,12 @@
 #include <QFileInfo>
 #include <QFileSystemModel>
 #include <QString>
-#include <QDebug>
+//#include <QDebug>
 #include <QRegularExpression>
 #include <QStringList>
 
 #include <algorithm>
-#include <cstddef>
+//#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iterator>

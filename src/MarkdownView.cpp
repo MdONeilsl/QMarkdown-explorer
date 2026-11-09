@@ -25,8 +25,9 @@
 #include <QTextFragment>
 #include <QUrl>
 #include <QWheelEvent>
+#include <QScrollBar>
 
-#include <cstddef>
+//#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -472,15 +473,39 @@ void MarkdownView::scrollToAnchor(const QString &fragment)
                 : base + u'-' + QString::number(count);
 
             if (!candidate.isEmpty() && candidate == needle) {
-                // Move the cursor to the start of the heading block and
-                // scroll it into view.  No format mutation — block and
-                // char formats stay exactly as applyDocumentStyles left
-                // them, so Ctrl+wheel zoom and the code-block tint are
+                // Move the cursor to the start of the heading block.
+                // No format mutation — block and char formats stay
+                // exactly as applyDocumentStyles left them, so
+                // Ctrl+wheel zoom and the code-block tint are
                 // unaffected.
                 QTextCursor c(block);
                 c.movePosition(QTextCursor::StartOfBlock);
                 setTextCursor(c);
-                ensureCursorVisible();
+
+                // Place the heading’s first line near the viewport top.
+                // cursorRect() returns the cursor position in viewport
+                // coordinates: a positive top() means the target sits
+                // below the visible area, a negative top() means above.
+                // Adding that delta to the current scrollbar value
+                // converts it into a document position, and setting
+                // the scrollbar there scrolls the heading into view at
+                // the intended offset.
+                //
+                // ensureCursorVisible() is not used here: it scrolls
+                // the minimum amount needed to bring the cursor on
+                // screen, which places a below-view target at the
+                // bottom edge of the viewport instead of the top.
+                //
+                // The margin keeps the heading from sitting flush
+                // against the frame edge.  QScrollBar::setValue()
+                // clamps to its own range; qMax(0, …) is defensive.
+                constexpr int kAnchorMarginPx = 8;
+                const int topInViewport = cursorRect(c).top();
+                const int newScrollValue =
+                    verticalScrollBar()->value()
+                    + topInViewport
+                    - kAnchorMarginPx;
+                verticalScrollBar()->setValue(qMax(0, newScrollValue));
                 return;
             }
         }
