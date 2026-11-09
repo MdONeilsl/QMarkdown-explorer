@@ -126,6 +126,36 @@ QString relativeForwardSlashed(const std::filesystem::path &root,
         static_cast<qsizetype>(u8.size()));
 }
 
+/**
+ * @brief Returns `true` when `p` is a `README.md` file that is not
+ *        located directly inside the configured root.
+ *
+ * Mirrors the README-exemption rule in `filterAcceptsRow()`: a README
+ * is visible only at the root, and every other README is hidden from
+ * the tree.  `rebuildCache()` uses this to decide whether a matching
+ * README should contribute to folder visibility — see the call site
+ * for the reasoning.
+ *
+ * @param p                    Candidate entry path from the walk.
+ * @param normalisedRootPath   The configured root, already normalised
+ *                             by `setSourceRootPath()`.  Compared
+ *                             case-insensitively so a path that
+ *                             differs from the root only in letter
+ *                             case on Windows is still treated as
+ *                             “at the root”.
+ */
+bool isSubfolderReadme(const std::filesystem::path &p,
+                       const QString &normalisedRootPath)
+{
+    const QString name = toQString(p.filename());
+    if (name.compare(QStringLiteral("README.md"), Qt::CaseInsensitive) != 0)
+        return false;
+
+    const QString parent = normalizePath(toQString(p.parent_path()));
+    return QString::compare(parent, normalisedRootPath,
+                            Qt::CaseInsensitive) != 0;
+}
+
 } // namespace
 
 MarkdownFilterProxyModel::MarkdownFilterProxyModel(QObject *parent)
@@ -241,14 +271,34 @@ void MarkdownFilterProxyModel::rebuildCache()
         if (!hasMarkdownExtension(p))
             continue;
 
-        bool match = true;
         if (hasSearch) {
             const QString fileName = toQString(p.filename());
-            match = fileName.contains(m_searchText, Qt::CaseInsensitive)
-                    || fileContainsText(p, m_searchText);
+            const bool nameMatches =
+                fileName.contains(m_searchText, Qt::CaseInsensitive);
+
+            if (isSubfolderReadme(p, m_rootPath)) {
+                // Subfolder READMEs are hidden from the tree by
+                // filterAcceptsRow rule 3, so a filename-only match
+                // produces no visible row and its folder must not
+                // appear on that basis alone.  README.md always
+                // contains substrings like "read", "me", and "md", so
+                // relying on the name would surface almost every
+                // folder for common short queries — the noise this
+                // rule exists to prevent.
+                //
+                // A content match is different: the user can click
+                // the folder and the README loads with the matching
+                // occurrences highlighted in the viewer.  That is a
+                // real hit, so the folder stays visible.
+                if (!fileContainsText(p, m_searchText))
+                    continue;
+            } else if (!nameMatches && !fileContainsText(p, m_searchText)) {
+                // Non-README files keep the original name-or-content
+                // behaviour; only their row (not a folder-only
+                // contribution) depends on this.
+                continue;
+            }
         }
-        if (!match)
-            continue;
 
         m_matchingFiles.insert(normalizePath(toQString(p)));
 
