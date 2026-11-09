@@ -16,6 +16,7 @@ class QModelIndex;
 class QTimer;
 class QToolButton;
 class QTreeView;
+class QEvent; 
 
 class MarkdownFilterProxyModel;
 class MarkdownView;
@@ -137,7 +138,27 @@ public:
     int     historySize()  const { return m_history.size(); }
     int     historyIndex() const { return m_historyIndex; }
     QString currentFile()  const { return m_currentFile; }
-
+protected:
+    /**
+     * @brief Handles keyboard events on the file tree.
+     *
+     * Right arrow on a file row opens it, mirroring a mouse click.
+     * Right arrow on a folder row falls through to QTreeView so the
+     * default expand-or-move-to-child behaviour still applies.
+     *
+     * Left arrow always falls through to QTreeView (collapse or
+     * move-to-parent).  If the cursor lands on a folder as a result —
+     * which happens when the previous item was a file or a collapsed
+     * folder, but not when the previous item was an expanded folder
+     * being collapsed — that folder's README is loaded after the
+     * default handler finishes.  The check is deferred via
+     * QTimer::singleShot so it observes the post-navigation state.
+     *
+     * Only events delivered to m_treeView are intercepted; every other
+     * event and object is delegated to the base class unchanged.
+     */
+    bool eventFilter(QObject *obj, QEvent *event) override;
+    
 private slots:
     /// Toolbar action: re-pick the root folder at any time.
     void openFolderDialog();

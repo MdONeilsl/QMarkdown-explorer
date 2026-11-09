@@ -39,8 +39,10 @@
 #include <QUrl>
 #include <QWidget>
 #include <QScrollBar>
+#include <QEvent>
+#include <QKeyEvent>
 
-#include <cstddef>
+//#include <cstddef>
 #include <filesystem>
 #include <string>
 
@@ -176,6 +178,12 @@ void MainWindow::buildCentralWidget()
     m_treeView->setAnimated(false);
     m_treeView->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_treeView->setSelectionMode(QAbstractItemView::SingleSelection);
+
+    // Keyboard navigation: arrow keys are handled by eventFilter()
+    // because QTreeView emits no signal for them and the default
+    // behaviour needs to be supplemented — right opens a file, left
+    // loads a folder's README when navigation moves the cursor.
+    m_treeView->installEventFilter(this);
 
     m_markdownView = new MarkdownView;
 
@@ -521,6 +529,64 @@ void MainWindow::handleTreeClicked(const QModelIndex &index)
     }
 
     openMarkdownFile(path);
+}
+
+bool MainWindow::eventFilter(QObject *obj, QEvent *event)
+{
+    if (obj != m_treeView || !m_fileModel || !m_filterProxy)
+        return QMainWindow::eventFilter(obj, event);
+
+    if (event->type() != QEvent::KeyPress)
+        return QMainWindow::eventFilter(obj, event);
+
+    auto *ke = static_cast<QKeyEvent *>(event);
+
+    if (ke->key() == Qt::Key_Right) {
+        const QModelIndex current = m_treeView->currentIndex();
+        if (current.isValid()) {
+            const QModelIndex src = m_filterProxy->mapToSource(current);
+            if (src.isValid() && !m_fileModel->isDir(src)) {
+                // File row: open it and consume the key.  Consuming
+                // (rather than returning false) keeps QTreeView from
+                // attempting to "expand" a leaf, which would be a
+                // no-op — but the explicit consume makes the intent
+                // visible in the code.
+                openMarkdownFile(m_fileModel->filePath(src));
+                return true;
+            }
+        }
+        // Folder row (or invalid index): let QTreeView handle the
+        // default right-arrow behaviour — expand the folder if it is
+        // collapsed, or move the cursor to its first child if it is
+        // already expanded.
+        return QMainWindow::eventFilter(obj, event);
+    }
+
+    if (ke->key() == Qt::Key_Left) {
+        const QModelIndex before = m_treeView->currentIndex();
+
+        // Defer the post-check to the next event-loop iteration so
+        // QTreeView's default left-arrow handler has finished.  That
+        // handler either collapses the current folder (cursor stays)
+        // or moves the cursor to the parent (cursor changes).  Only
+        // the second case is "navigation" and only that case should
+        // load the new folder's README — comparing the captured
+        // `before` with the observed `after` distinguishes them.
+        QTimer::singleShot(0, this, [this, before]() {
+            const QModelIndex after = m_treeView->currentIndex();
+            if (after == before || !after.isValid())
+                return;
+            const QModelIndex src = m_filterProxy->mapToSource(after);
+            if (src.isValid() && m_fileModel->isDir(src))
+                loadFolderReadme(m_fileModel->filePath(src));
+        });
+
+        // Do not consume: QTreeView must perform the actual collapse
+        // or move-to-parent behaviour.
+        return QMainWindow::eventFilter(obj, event);
+    }
+
+    return QMainWindow::eventFilter(obj, event);
 }
 
 bool MainWindow::openMarkdownFile(const QString &filePath,
