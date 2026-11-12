@@ -5,16 +5,17 @@
 #include <QFileInfo>
 #include <QFileSystemModel>
 #include <QString>
-//#include <QDebug>
 #include <QRegularExpression>
 #include <QStringList>
 
 #include <algorithm>
-//#include <cstddef>
+#include <cstddef>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <system_error>
 
 namespace {
@@ -73,7 +74,88 @@ bool hasMarkdownExtension(const std::filesystem::path &p)
     return ext == ".md" || ext == ".markdown";
 }
 
-bool fileContainsText(const std::filesystem::path &p, const QString &needle)
+bool isHiddenName(const std::filesystem::path &p)
+{
+    const std::u8string name = p.filename().u8string();
+    return !name.empty() && name[0] == u8'.';
+}
+
+/**
+ * @brief ASCII-only case folding.  Bytes outside [A-Z] are returned
+ *        unchanged.
+ *
+ * Deliberately does not touch bytes >= 0x80: those are the lead and
+ * continuation bytes of UTF-8 multi-byte sequences, and folding them
+ * would corrupt the sequence rather than case-fold it.  The result is
+ * that byte-level searching is correct for any UTF-8 content as long
+ * as the *needle* is ASCII — which is the common case and the one the
+ * byte path is designed for.  Non-ASCII needles go through
+ * QString::contains() and its Unicode-aware comparison instead.
+ */
+inline char asciiFold(char c)
+{
+    const auto uc = static_cast<unsigned char>(c);
+    if (uc >= 'A' && uc <= 'Z')
+        return static_cast<char>(uc + ('a' - 'A'));
+    return c;
+}
+
+/**
+ * @brief Returns `true` if `needle` is non-empty and contains only
+ *        ASCII bytes (< 0x80).
+ */
+bool isAsciiOnly(std::string_view needle)
+{
+    for (char c : needle) {
+        if (static_cast<unsigned char>(c) >= 0x80)
+            return false;
+    }
+    return true;
+}
+
+/**
+ * @brief Case-insensitive substring search over raw bytes.
+ *
+ * Both ranges are treated as opaque byte sequences.  Folding is
+ * ASCII-only — see `asciiFold()`.  Safe on arbitrary binary input.
+ * Empty needle is treated as “match” (defensive; the caller never
+ * passes an empty needle).
+ */
+bool asciiCaseInsensitiveContains(std::string_view haystack,
+                                  std::string_view needle)
+{
+    if (needle.empty())
+        return true;
+    if (needle.size() > haystack.size())
+        return false;
+
+    const auto it = std::search(
+        haystack.begin(), haystack.end(),
+        needle.begin(), needle.end(),
+        [](char a, char b) { return asciiFold(a) == asciiFold(b); });
+    return it != haystack.end();
+}
+
+/**
+ * @brief Case-insensitive content match with two paths.
+ *
+ *  - ASCII needle: fold the raw file bytes and search them directly.
+ *    No QString conversion, no per-file allocation beyond the file
+ *    read itself.
+ *
+ *  - Non-ASCII needle: strip the BOM if present, convert the file to
+ *    QString, and use `QString::contains()` for its Unicode-aware
+ *    case folding.  This is the only path where non-ASCII case
+ *    folding matters, and it is rare — most search text is ASCII.
+ *
+ * The BOM strip is defensive: a leading U+FEFF would not match ASCII
+ * needle bytes anyway (they are all < 0x80), but stripping it keeps
+ * the QString path identical to the previous behaviour.
+ */
+bool fileContainsText(const std::filesystem::path &p,
+                      const QString &needle,
+                      std::string_view needleBytes,
+                      bool needleIsAscii)
 {
     std::ifstream in(p, std::ios::binary);
     if (!in.is_open())
@@ -91,16 +173,15 @@ bool fileContainsText(const std::filesystem::path &p, const QString &needle)
         offset = 3;
     }
 
-    const QString content = QString::fromUtf8(
-        raw.data() + offset,
-        static_cast<qsizetype>(raw.size() - offset));
-    return content.contains(needle, Qt::CaseInsensitive);
-}
+    const std::string_view content(raw.data() + offset,
+                                   raw.size() - offset);
 
-bool isHiddenName(const std::filesystem::path &p)
-{
-    const std::u8string name = p.filename().u8string();
-    return !name.empty() && name[0] == u8'.';
+    if (needleIsAscii)
+        return asciiCaseInsensitiveContains(content, needleBytes);
+
+    const QString str = QString::fromUtf8(
+        content.data(), static_cast<qsizetype>(content.size()));
+    return str.contains(needle, Qt::CaseInsensitive);
 }
 
 /**
@@ -132,9 +213,9 @@ QString relativeForwardSlashed(const std::filesystem::path &root,
  *
  * Mirrors the README-exemption rule in `filterAcceptsRow()`: a README
  * is visible only at the root, and every other README is hidden from
- * the tree.  `rebuildCache()` uses this to decide whether a matching
- * README should contribute to folder visibility — see the call site
- * for the reasoning.
+ * the tree.  `applySearchFilter()` uses this to decide whether a
+ * matching README should contribute to folder visibility — see the
+ * call site for the reasoning.
  *
  * @param p                    Candidate entry path from the walk.
  * @param normalisedRootPath   The configured root, already normalised
@@ -171,7 +252,8 @@ void MarkdownFilterProxyModel::setSourceRootPath(const QString &path)
         return;
     m_rootPath = normalised;
     loadIgnoreRules();
-    rebuildCache();
+    scanFilesystem();
+    applySearchFilter();
     invalidateFilter();
 }
 
@@ -180,21 +262,21 @@ void MarkdownFilterProxyModel::setSearchText(const QString &text)
     if (m_searchText == text)
         return;
     m_searchText = text;
-    rebuildCache();
+    applySearchFilter();
     invalidateFilter();
 }
 
 void MarkdownFilterProxyModel::refresh()
 {
     loadIgnoreRules();
-    rebuildCache();
+    scanFilesystem();
+    applySearchFilter();
     invalidateFilter();
 }
 
-void MarkdownFilterProxyModel::rebuildCache()
+void MarkdownFilterProxyModel::scanFilesystem()
 {
-    m_matchingFiles.clear();
-    m_visibleDirs.clear();
+    m_cachedFiles.clear();
 
     if (m_rootPath.isEmpty())
         return;
@@ -205,7 +287,6 @@ void MarkdownFilterProxyModel::rebuildCache()
     if (!std::filesystem::is_directory(root, ec) || ec)
         return;
 
-    const bool hasSearch = !m_searchText.isEmpty();
     const bool hasIgnore = !m_ignoreRules.isEmpty();
 
     // skip_permission_denied keeps the walk alive when a subfolder is
@@ -271,45 +352,23 @@ void MarkdownFilterProxyModel::rebuildCache()
         if (!hasMarkdownExtension(p))
             continue;
 
-        if (hasSearch) {
-            const QString fileName = toQString(p.filename());
-            const bool nameMatches =
-                fileName.contains(m_searchText, Qt::CaseInsensitive);
-
-            if (isSubfolderReadme(p, m_rootPath)) {
-                // Subfolder READMEs are hidden from the tree by
-                // filterAcceptsRow rule 3, so a filename-only match
-                // produces no visible row and its folder must not
-                // appear on that basis alone.  README.md always
-                // contains substrings like "read", "me", and "md", so
-                // relying on the name would surface almost every
-                // folder for common short queries — the noise this
-                // rule exists to prevent.
-                //
-                // A content match is different: the user can click
-                // the folder and the README loads with the matching
-                // occurrences highlighted in the viewer.  That is a
-                // real hit, so the folder stays visible.
-                if (!fileContainsText(p, m_searchText))
-                    continue;
-            } else if (!nameMatches && !fileContainsText(p, m_searchText)) {
-                // Non-README files keep the original name-or-content
-                // behaviour; only their row (not a folder-only
-                // contribution) depends on this.
-                continue;
-            }
-        }
-
-        m_matchingFiles.insert(normalizePath(toQString(p)));
+        // Everything the search filter will need, precomputed once
+        // here so per-keystroke filtering does no filesystem work
+        // beyond reading file content for candidate matches.
+        CachedFile cf;
+        cf.normalizedPath     = normalizePath(toQString(p));
+        cf.name               = toQString(p.filename());
+        cf.fsPath             = p;
+        cf.isSubfolderReadme  = isSubfolderReadme(p, m_rootPath);
 
         // Register every ancestor of this file, stopping at the
-        // configured root.  The root itself is inserted on the final
+        // configured root.  The root itself is included on the final
         // iteration (when `anc == root` before the break); the explicit
         // ancestor-acceptance rule in filterAcceptsRow() guarantees the
         // rest of the chain is visible too.
         std::filesystem::path anc = p.parent_path();
         while (!anc.empty()) {
-            m_visibleDirs.insert(normalizePath(toQString(anc)));
+            cf.ancestors.append(normalizePath(toQString(anc)));
             if (anc == root)
                 break;
             const std::filesystem::path parent = anc.parent_path();
@@ -317,6 +376,68 @@ void MarkdownFilterProxyModel::rebuildCache()
                 break;
             anc = parent;
         }
+
+        m_cachedFiles.append(cf);
+    }
+}
+
+void MarkdownFilterProxyModel::applySearchFilter()
+{
+    m_matchingFiles.clear();
+    m_visibleDirs.clear();
+
+    const bool hasSearch = !m_searchText.isEmpty();
+
+    // Pre-compute the needle bytes once per search so the per-file
+    // content check does not re-encode it.  ASCII detection drives
+    // the choice between the byte-level and Unicode-aware paths —
+    // see fileContainsText().
+    const QByteArray needleUtf8 = hasSearch
+                                      ? m_searchText.toUtf8()
+                                      : QByteArray();
+    std::string_view needleBytes;
+    if (hasSearch) {
+        needleBytes = std::string_view(
+            needleUtf8.constData(),
+            static_cast<std::size_t>(needleUtf8.size()));
+    }
+    const bool needleIsAscii = hasSearch && isAsciiOnly(needleBytes);
+
+    for (const CachedFile &cf : m_cachedFiles) {
+        if (hasSearch) {
+            const bool nameMatches =
+                cf.name.contains(m_searchText, Qt::CaseInsensitive);
+
+            if (cf.isSubfolderReadme) {
+                // Subfolder READMEs are hidden from the tree by
+                // filterAcceptsRow rule 3, so a filename-only match
+                // produces no visible row and its folder must not
+                // appear on that basis alone.  README.md always
+                // contains substrings like "read", "me", and "md",
+                // so relying on the name would surface almost every
+                // folder for common short queries — the noise this
+                // rule exists to prevent.
+                //
+                // A content match is different: the user can click
+                // the folder and the README loads with the matching
+                // occurrences highlighted in the viewer.  That is a
+                // real hit, so the folder stays visible.
+                if (!fileContainsText(cf.fsPath, m_searchText,
+                                      needleBytes, needleIsAscii))
+                    continue;
+            } else if (!nameMatches) {
+                // Non-README files keep the original name-or-content
+                // behaviour; only their row (not a folder-only
+                // contribution) depends on this.
+                if (!fileContainsText(cf.fsPath, m_searchText,
+                                      needleBytes, needleIsAscii))
+                    continue;
+            }
+        }
+
+        m_matchingFiles.insert(cf.normalizedPath);
+        for (const QString &anc : cf.ancestors)
+            m_visibleDirs.insert(anc);
     }
 }
 
@@ -394,7 +515,6 @@ bool MarkdownFilterProxyModel::matchesIgnoreRule(const QString &relPath,
     }
     return false;
 }
-
 
 QVariant MarkdownFilterProxyModel::data(const QModelIndex &index,
                                         int role) const

@@ -5,6 +5,9 @@
 #include <QSet>
 #include <QSortFilterProxyModel>
 #include <QString>
+#include <QStringList>
+
+#include <filesystem>
 
 /**
  * @brief Visibility filter for the file tree.
@@ -51,9 +54,24 @@
  *      patterns are skipped with a warning.  Matching is
  *      case-sensitive; prefix a rule with `(?i)` for case-folding.
  *
- * Both content matching and folder pruning depend on a cache built once
- * per search / root change, so the filter hot path is a set lookup
- * rather than a filesystem walk — see `filterAcceptsRow()` below.
+ * **Cache design.**
+ *
+ * The filesystem walk is expensive (thousands of FindNextFile calls on
+ * Windows) and its result does not change between searches — only the
+ * search string does.  So the walk runs once per root change or
+ * `refresh()` (`scanFilesystem()`), producing an in-memory list of
+ * every markdown file that survives the base rules (extension,
+ * not-hidden, not-ignored).  Each search then iterates that list
+ * (`applySearchFilter()`) and rebuilds `m_matchingFiles` /
+ * `m_visibleDirs` without touching the filesystem again.
+ *
+ * Content reads during a search use a byte-level ASCII case-insensitive
+ * scan against the raw file bytes — no `QString::fromUtf8()` per file.
+ * Non-ASCII needles fall back to `QString::contains()` because that is
+ * the case that actually requires Unicode case folding.
+ *
+ * The filter hot path (`filterAcceptsRow()`) is unchanged: it reads
+ * only from the two sets.
  *
  * Usage contract:
  *
@@ -61,13 +79,14 @@
  *     and **before** setting the view's root index, so the cache is
  *     populated before the view starts asking `filterAcceptsRow()`
  *     about its children.  This call also loads the root’s `.ignore`,
- *     if present.
+ *     if present, and scans the filesystem.
  *   * Call `refresh()` after external file changes if the search string
- *     is non-empty — the cache stores which files matched, and an edited
- *     file may now (not) match.  With an empty search string the cache
- *     is content-independent and does not need refreshing.  `refresh()`
- *     also reloads the `.ignore` file, so this is the right call after
- *     editing ignore patterns.
+ *     is non-empty — the cached file list is stale, and an edited file
+ *     may now (not) match.  `refresh()` also reloads `.ignore`, so this
+ *     is the right call after editing ignore patterns.
+ *   * `setSearchText()` reuses the cached file list.  It does not
+ *     re-walk the filesystem — that is the design of the cache and the
+ *     reason searches are fast after the first one.
  *   * The proxy assumes its source model is a `QFileSystemModel`; it
  *     calls `QFileSystemModel::filePath()` / `isDir()` to classify a
  *     row and will not behave sensibly with any other source type.
@@ -80,13 +99,14 @@ public:
     explicit MarkdownFilterProxyModel(QObject *parent = nullptr);
 
     /**
-     * @brief Binds the proxy to a source root and rebuilds the cache.
+     * @brief Binds the proxy to a source root, then rebuilds the cache
+     *        and re-filters.
      *
      * Must be called after the source model’s `setRootPath()` so the
      * walk scans exactly the subtree the tree view will display.
-     * Triggers a full cache rebuild and re-filter, and re-loads the
-     * root’s `.ignore` file.  A call with the same path as the
-     * previous one is a no-op.
+     * Triggers a full filesystem scan, then a filter against the
+     * current search string, and re-loads the root’s `.ignore` file.
+     * A call with the same path as the previous one is a no-op.
      *
      * @param path  Absolute path of the root.  Normalised internally
      *              (forward slashes, no trailing separator except on a
@@ -98,7 +118,7 @@ public:
     QString sourceRootPath() const { return m_rootPath; }
 
     /**
-     * @brief Sets the search string and rebuilds the cache.
+     * @brief Sets the search string and re-filters.
      *
      * Empty string = no content filter (every Markdown file under the
      * root is visible, still subject to the folder-pruning rule).  A
@@ -106,12 +126,15 @@ public:
      * rapid keystrokes that resolve to the same value after trimming
      * do not cause redundant rebuilds.
      *
+     * Reuses the cached file list from the last filesystem scan —
+     * no re-walk.  Only file *content* is re-read (and only for files
+     * whose names do not match).
+     *
      * Does **not** reload `.ignore` — that file changes only when the
      * user explicitly refreshes or the root changes.  Avoids
      * recompiling every ignore regex on every keystroke.
      *
-     * @note Rebuilding the cache means reading every `.md` file’s
-     *       content once.  Callers should debounce user keystrokes; see
+     * @note Callers should debounce user keystrokes; see
      *       `MainWindow::handleSearchTextChanged()` for the 300 ms
      *       pattern this class is designed around.
      */
@@ -121,13 +144,15 @@ public:
     QString searchText() const { return m_searchText; }
 
     /**
-     * @brief Rebuilds the cache and reloads `.ignore`.
+     * @brief Rescans the filesystem, reloads `.ignore`, re-filters.
      *
      * Call after the user edits a file on disk if a search is active,
      * so its new content is considered by the next filter pass.  Also
      * the correct call after editing the root’s `.ignore` — the cached
      * ignore rules are rebuilt here, so pattern changes take effect
-     * without restarting.
+     * without restarting.  And the correct call after adding or
+     * removing files outside the application — the cached file list
+     * must be refreshed before those changes become visible.
      */
     void refresh();
 
@@ -136,23 +161,21 @@ protected:
      * @brief Decides row visibility from the cache.
      *
      * Does not touch the filesystem — every decision is a `QSet` lookup
-     * against data computed by `rebuildCache()`.  This is what makes
-     * the cache-based design safe to call once per row on every filter
-     * pass, including the bulk re-evaluation triggered by
+     * against data computed by `applySearchFilter()`.  This is what
+     * makes the cache-based design safe to call once per row on every
+     * filter pass, including the bulk re-evaluation triggered by
      * `invalidateFilter()`.
      *
      * Acceptance order, first match wins:
      *
      *   1. The configured root and every ancestor of it — always
      *      accepted (see the class-level contract).
-     *   2. A directory — accepted iff it appears in `m_visibleDirs`
-     *      (populated by `rebuildCache()` from each surviving file’s
-     *      ancestor chain).  Ignored directories never appear here
-     *      because the walk skips their entire subtree.
+     *   2. A directory — accepted iff it appears in `m_visibleDirs`.
+     *      Ignored directories never appear here because the walk
+     *      skips their entire subtree.
      *   3. `README.md` outside the root — rejected.
      *   4. A Markdown file — accepted iff it appears in
-     *      `m_matchingFiles`.  Ignored files never appear there
-     *      because the walk skips them before the cache is populated.
+     *      `m_matchingFiles`.
      */
     bool filterAcceptsRow(int sourceRow,
                           const QModelIndex &parent) const override;
@@ -160,7 +183,30 @@ protected:
     QVariant data(const QModelIndex &index, int role) const override;
 
 private:
-    void rebuildCache();
+    /**
+     * @brief A single markdown file that survived the base rules during
+     *        the last `scanFilesystem()` call.
+     *
+     * Everything that does not depend on the search string is cached
+     * here so `applySearchFilter()` can iterate in memory without
+     * touching the filesystem for anything other than file content
+     * (and only for files whose names do not match the query).
+     */
+    struct CachedFile
+    {
+        QString                normalizedPath;     // key for m_matchingFiles
+        QString                name;               // basename, for name match
+        QStringList            ancestors;          // keys for m_visibleDirs
+        std::filesystem::path  fsPath;             // for content reads
+        bool                   isSubfolderReadme = false;
+    };
+
+    /// Walks the root once and populates `m_cachedFiles`.
+    void scanFilesystem();
+
+    /// Filters `m_cachedFiles` against `m_searchText` and populates
+    /// `m_matchingFiles` and `m_visibleDirs`.
+    void applySearchFilter();
 
     /// Reads `<root>/.ignore`, compiles each non-comment line, and
     /// populates `m_ignoreRules`.  Silent when the file is absent.
@@ -182,7 +228,8 @@ private:
 
     QString       m_rootPath;
     QString       m_searchText;
-    QSet<QString> m_matchingFiles;   // absolute paths of .md files that pass
-    QSet<QString> m_visibleDirs;     // directories with >= 1 surviving descendant
-    QList<QRegularExpression> m_ignoreRules;  // compiled .ignore patterns
+    QList<CachedFile>         m_cachedFiles;      // populated by scanFilesystem()
+    QSet<QString> m_matchingFiles;                // absolute paths of .md files that pass
+    QSet<QString> m_visibleDirs;                  // directories with >= 1 surviving descendant
+    QList<QRegularExpression> m_ignoreRules;      // compiled .ignore patterns
 };
